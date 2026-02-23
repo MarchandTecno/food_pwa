@@ -1,0 +1,416 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["core", "public"]
+}
+
+model audit_logs {
+  id             String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenant_id      String?   @db.Uuid
+  user_id        String?   @db.Uuid
+  accion         String    @db.VarChar(20)
+  tabla_afectada String    @db.VarChar(50)
+  registro_id    String?   @db.Uuid
+  valor_anterior Json?
+  valor_nuevo    Json?
+  ip_address     String?   @db.VarChar(45)
+  created_at     DateTime? @default(now()) @db.Timestamptz(6)
+  tenants        tenants?  @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users          users?    @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@schema("core")
+}
+
+model core_cash_movements {
+  id            String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  session_id    String?             @db.Uuid
+  type          String              @db.VarChar(10)
+  amount        Decimal             @db.Decimal(12, 2)
+  concept       String              @db.VarChar(255)
+  created_at    DateTime?           @default(now()) @db.Timestamptz(6)
+  cash_sessions core_cash_sessions? @relation(fields: [session_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("cash_movements")
+  @@schema("core")
+}
+
+model core_cash_sessions {
+  id                  String                @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenant_id           String?               @db.Uuid
+  branch_id           String?               @db.Uuid
+  user_id             String?               @db.Uuid
+  opening_time        DateTime?             @default(now()) @db.Timestamptz(6)
+  closing_time        DateTime?             @db.Timestamptz(6)
+  cash_initial        Decimal?              @default(0.00) @db.Decimal(12, 2)
+  cash_sales_expected Decimal?              @default(0.00) @db.Decimal(12, 2)
+  cash_final_reported Decimal?              @db.Decimal(12, 2)
+  status              String?               @default("OPEN") @db.VarChar(20)
+  cash_movements      core_cash_movements[]
+  branches            branches?             @relation(fields: [branch_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenants             tenants?              @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users               users?                @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("cash_sessions")
+  @@schema("core")
+}
+
+model coupons {
+  id             String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenant_id      String?   @db.Uuid
+  codigo         String    @db.VarChar(20)
+  descripcion    String?
+  tipo_descuento String    @db.VarChar(20)
+  valor          Decimal   @db.Decimal(12, 2)
+  fecha_inicio   DateTime? @db.Timestamptz(6)
+  fecha_fin      DateTime? @db.Timestamptz(6)
+  limite_usos    Int?
+  usos_actuales  Int?      @default(0)
+  minimo_compra  Decimal?  @default(0.00) @db.Decimal(12, 2)
+  is_active      Boolean?  @default(true)
+  tenants        tenants?  @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  orders         orders[]
+
+  @@unique([tenant_id, codigo])
+  @@schema("core")
+}
+
+model notification_logs {
+  id            String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  order_id      String?   @db.Uuid
+  type          String?   @db.VarChar(20)
+  recipient     String?   @db.VarChar(100)
+  status        String?   @db.VarChar(20)
+  error_message String?
+  created_at    DateTime? @default(now()) @db.Timestamptz(6)
+  orders        orders?   @relation(fields: [order_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@schema("core")
+}
+
+model order_payments {
+  id                 String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  order_id           String?          @db.Uuid
+  payment_method_id  Int?
+  monto              Decimal          @db.Decimal(12, 2)
+  referencia_externa String?          @db.VarChar(100)
+  comprobante_url    String?
+  created_at         DateTime?        @default(now()) @db.Timestamptz(6)
+  orders             orders?          @relation(fields: [order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  payment_methods    payment_methods? @relation(fields: [payment_method_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@schema("core")
+}
+
+model tax_rules {
+  id        String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenant_id String?    @db.Uuid
+  nombre    String     @db.VarChar(50)
+  tasa      Decimal    @db.Decimal(5, 4)
+  is_active Boolean?   @default(true)
+  tenants   tenants?   @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  products  products[]
+
+  @@schema("core")
+}
+
+model branches {
+  id                   String                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenant_id            String?                @db.Uuid
+  nombre_sucursal      String                 @db.VarChar(100)
+  direccion_fisica     String?
+  horario_apertura     DateTime?              @db.Time(6)
+  horario_cierre       DateTime?              @db.Time(6)
+  is_open              Boolean?               @default(true)
+  core_cash_sessions   core_cash_sessions[]
+  tenants              tenants?               @relation(fields: [tenant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  public_cash_sessions public_cash_sessions[]
+  orders               orders[]
+  users                users[]
+
+  @@schema("public")
+}
+
+model public_cash_movements {
+  id            String                @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  session_id    String?               @db.Uuid
+  type          String                @db.VarChar(20)
+  amount        Decimal               @db.Decimal(12, 2)
+  concept       String                @db.VarChar(255)
+  created_at    DateTime?             @default(now()) @db.Timestamptz(6)
+  cash_sessions public_cash_sessions? @relation(fields: [session_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("cash_movements")
+  @@schema("public")
+}
+
+model public_cash_sessions {
+  id                      String                  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenant_id               String?                 @db.Uuid
+  branch_id               String?                 @db.Uuid
+  user_id                 String?                 @db.Uuid
+  opening_time            DateTime?               @default(now()) @db.Timestamptz(6)
+  closing_time            DateTime?               @db.Timestamptz(6)
+  cash_initial            Decimal                 @default(0.00) @db.Decimal(12, 2)
+  cash_sales_expected     Decimal?                @default(0.00) @db.Decimal(12, 2)
+  cash_final_reported     Decimal?                @db.Decimal(12, 2)
+  cash_difference         Decimal?                @db.Decimal(12, 2)
+  card_sales_expected     Decimal?                @default(0.00) @db.Decimal(12, 2)
+  transfer_sales_expected Decimal?                @default(0.00) @db.Decimal(12, 2)
+  status                  String?                 @default("OPEN") @db.VarChar(20)
+  notes                   String?
+  cash_movements          public_cash_movements[]
+  branches                branches?               @relation(fields: [branch_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenants                 tenants?                @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users                   users?                  @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  orders                  orders[]
+
+  @@map("cash_sessions")
+  @@schema("public")
+}
+
+model categories {
+  id           String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenant_id    String?    @db.Uuid
+  nombre       String     @db.VarChar(100)
+  orden_visual Int?
+  tenants      tenants?   @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  products     products[]
+
+  @@schema("public")
+}
+
+model customer_addresses {
+  id                 String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  customer_id        String?    @db.Uuid
+  etiqueta           String?    @default("Casa") @db.VarChar(50)
+  calle_avenida      String?    @db.VarChar(150)
+  num_exterior       String?    @db.VarChar(20)
+  num_interior_depto String?    @db.VarChar(20)
+  torre_edificio     String?    @db.VarChar(50)
+  referencias        String?
+  codigo_postal      String?    @db.VarChar(10)
+  is_default         Boolean?   @default(false)
+  customers          customers? @relation(fields: [customer_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  orders             orders[]
+
+  @@schema("public")
+}
+
+model customers {
+  id                 String               @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenant_id          String?              @db.Uuid
+  nombre             String               @db.VarChar(100)
+  apellido           String?              @db.VarChar(100)
+  whatsapp           String?              @unique @db.VarChar(20)
+  email              String?              @db.VarChar(100)
+  puntos_lealtad     Int?                 @default(0)
+  notas_preferencias String?
+  is_active          Boolean?             @default(true)
+  created_at         DateTime?            @default(now()) @db.Timestamptz(6)
+  customer_addresses customer_addresses[]
+  tenants            tenants?             @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  orders             orders[]
+
+  @@schema("public")
+}
+
+model ingredients {
+  id                      String                  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenant_id               String?                 @db.Uuid
+  nombre                  String                  @db.VarChar(100)
+  unidad_medida           String                  @db.VarChar(20)
+  stock_actual            Decimal?                @default(0.00) @db.Decimal(12, 2)
+  stock_minimo            Decimal?                @default(0.00) @db.Decimal(12, 2)
+  costo_unitario_promedio Decimal?                @default(0.00) @db.Decimal(12, 2)
+  last_restock            DateTime?               @db.Timestamp(6)
+  categoria_insumo        String?                 @db.VarChar(50)
+  tenants                 tenants?                @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  inventory_adjustments   inventory_adjustments[]
+  recipes                 recipes[]
+
+  @@schema("public")
+}
+
+model inventory_adjustments {
+  id            String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  ingredient_id String?      @db.Uuid
+  user_id       String?      @db.Uuid
+  cantidad      Decimal      @db.Decimal(12, 2)
+  motivo        String?      @db.VarChar(255)
+  fecha         DateTime?    @default(now()) @db.Timestamp(6)
+  ingredients   ingredients? @relation(fields: [ingredient_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users         users?       @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model order_items {
+  id                       String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  order_id                 String?   @db.Uuid
+  product_id               String?   @db.Uuid
+  cantidad                 Int
+  precio_unitario_snapshot Decimal   @db.Decimal(12, 2)
+  subtotal_item            Decimal   @db.Decimal(12, 2)
+  tasa_iva                 Decimal?  @default(16.00) @db.Decimal(5, 2)
+  notas_item               String?
+  orders                   orders?   @relation(fields: [order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  products                 products? @relation(fields: [product_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+model order_status_history {
+  id              String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  order_id        String?   @db.Uuid
+  status_anterior String?   @db.VarChar(30)
+  status_nuevo    String?   @db.VarChar(30)
+  user_id         String?   @db.Uuid
+  changed_at      DateTime? @default(now()) @db.Timestamptz(6)
+  orders          orders?   @relation(fields: [order_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users           users?    @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+model orders {
+  id                   String                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenant_id            String?                @db.Uuid
+  branch_id            String?                @db.Uuid
+  user_id              String?                @db.Uuid
+  customer_name        String?                @db.VarChar(150)
+  customer_whatsapp    String?                @db.VarChar(20)
+  folio_numero         Int                    @default(autoincrement())
+  status               String?                @default("PENDIENTE") @db.VarChar(30)
+  subtotal             Decimal                @default(0.00) @db.Decimal(12, 2)
+  impuestos_total      Decimal                @default(0.00) @db.Decimal(12, 2)
+  descuento_total      Decimal?               @default(0.00) @db.Decimal(12, 2)
+  total_neto           Decimal                @default(0.00) @db.Decimal(12, 2)
+  payment_method_id    Int?
+  payment_status       String?                @default("UNPAID") @db.VarChar(30)
+  created_at           DateTime?              @default(now()) @db.Timestamptz(6)
+  confirmed_at         DateTime?              @db.Timestamptz(6)
+  delivered_at         DateTime?              @db.Timestamptz(6)
+  nota_especial        String?
+  customer_id          String?                @db.Uuid
+  address_id           String?                @db.Uuid
+  cash_session_id      String?                @db.Uuid
+  coupon_id            String?                @db.Uuid
+  notification_logs    notification_logs[]
+  order_payments       order_payments[]
+  order_items          order_items[]
+  order_status_history order_status_history[]
+  customer_addresses   customer_addresses?    @relation(fields: [address_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  branches             branches?              @relation(fields: [branch_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  cash_sessions        public_cash_sessions?  @relation(fields: [cash_session_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  coupons              coupons?               @relation(fields: [coupon_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  customers            customers?             @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  payment_methods      payment_methods?       @relation(fields: [payment_method_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenants              tenants?               @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users                users?                 @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+model payment_methods {
+  id             Int              @id @default(autoincrement())
+  nombre         String           @unique @db.VarChar(50)
+  order_payments order_payments[]
+  orders         orders[]
+
+  @@schema("public")
+}
+
+model products {
+  id                String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  category_id       String?       @db.Uuid
+  nombre            String        @db.VarChar(100)
+  descripcion       String?
+  precio_venta      Decimal       @db.Decimal(12, 2)
+  imagen_url        String?
+  is_available      Boolean?      @default(true)
+  aplica_inventario Boolean?      @default(true)
+  tax_rule_id       String?       @db.Uuid
+  available_hours   Json?
+  order_items       order_items[]
+  categories        categories?   @relation(fields: [category_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tax_rules         tax_rules?    @relation(fields: [tax_rule_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recipes           recipes[]
+
+  @@schema("public")
+}
+
+model recipes {
+  id                 String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  product_id         String?      @db.Uuid
+  ingredient_id      String?      @db.Uuid
+  cantidad_requerida Decimal      @db.Decimal(12, 4)
+  ingredients        ingredients? @relation(fields: [ingredient_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  products           products?    @relation(fields: [product_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+model roles {
+  id         Int     @id @default(autoincrement())
+  nombre_rol String  @unique @db.VarChar(50)
+  users      users[]
+
+  @@schema("public")
+}
+
+model tenants {
+  id                   String                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  nombre_comercial     String                 @db.VarChar(100)
+  razon_social         String?                @db.VarChar(150)
+  rfc_tax_id           String?                @db.VarChar(20)
+  logo_url             String?
+  moneda               String?                @default("MXN") @db.VarChar(5)
+  telefono_contacto    String?                @db.VarChar(20)
+  email_admin          String                 @unique @db.VarChar(100)
+  config_whatsapp_msg  String?
+  is_active            Boolean?               @default(true)
+  created_at           DateTime?              @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime?              @default(now()) @db.Timestamptz(6)
+  audit_logs           audit_logs[]
+  core_cash_sessions   core_cash_sessions[]
+  coupons              coupons[]
+  tax_rules            tax_rules[]
+  branches             branches[]
+  public_cash_sessions public_cash_sessions[]
+  categories           categories[]
+  customers            customers[]
+  ingredients          ingredients[]
+  orders               orders[]
+  users                users[]
+
+  @@schema("public")
+}
+
+model users {
+  id                    String                  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenant_id             String?                 @db.Uuid
+  branch_id             String?                 @db.Uuid
+  rol_id                Int?
+  nombre                String                  @db.VarChar(100)
+  email                 String                  @unique @db.VarChar(100)
+  password_hash         String
+  last_login            DateTime?               @db.Timestamp(6)
+  is_active             Boolean?                @default(true)
+  audit_logs            audit_logs[]
+  core_cash_sessions    core_cash_sessions[]
+  public_cash_sessions  public_cash_sessions[]
+  inventory_adjustments inventory_adjustments[]
+  order_status_history  order_status_history[]
+  orders                orders[]
+  branches              branches?               @relation(fields: [branch_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  roles                 roles?                  @relation(fields: [rol_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenants               tenants?                @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@schema("public")
+}

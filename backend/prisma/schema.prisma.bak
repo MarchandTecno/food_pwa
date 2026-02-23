@@ -1,0 +1,494 @@
+// Backup of schema.prisma created before forcing db pull
+
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // Lista de schemas presentes en la base de datos (soporta referencias cruzadas)
+  schemas  = ["public", "core"]
+}
+
+// ============================================================================
+// MULTITENANT INFRASTRUCTURE
+// ============================================================================
+
+/// Cada negocio independiente en el sistema SaaS
+model Tenant {
+  id                String      @id @default(uuid()) @db.Uuid
+  nombreComercial   String      @db.VarChar(100)
+  razonSocial       String?     @db.VarChar(150)
+  rfcTaxId          String?     @db.VarChar(20)
+  logoUrl           String?
+  moneda            String      @default("MXN") @db.VarChar(5)
+  telefonoContacto  String?     @db.VarChar(20)
+  emailAdmin        String      @unique @db.VarChar(100)
+  configWhatsappMsg String?
+  isActive          Boolean     @default(true)
+  createdAt         DateTime    @default(now()) @db.Timestamptz()
+  updatedAt         DateTime    @updatedAt @db.Timestamptz()
+
+  // Relaciones
+  branches          Branch[]
+  users             User[]
+  ingredients       Ingredient[]
+  products          Product[]
+  customers         Customer[]
+  orders            Order[]
+  categories        Category[]
+  coupons           Coupon[]
+  taxRules          TaxRule[]
+  cashSessions      CashSession[]
+  auditLogs         AuditLog[]
+
+  @@map("tenants")
+}
+
+/// Sucursales de cada tenant
+model Branch {
+  id             String      @id @default(uuid()) @db.Uuid
+  tenantId       String      @db.Uuid
+  nombreSucursal String      @db.VarChar(100)
+  direccionFisica String?
+  horarioApertura DateTime?   @db.Time()
+  horarioCierre   DateTime?   @db.Time()
+  isOpen         Boolean     @default(true)
+
+  // Relaciones
+  tenant         Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users          User[]
+  orders         Order[]
+  cashSessions   CashSession[]
+
+  @@map("branches")
+}
+
+/// Sistema de roles y permisos
+model Role {
+  id         Int     @id @default(autoincrement())
+  nombreRol  String  @unique @db.VarChar(50)
+
+  // Relaciones
+  users      User[]
+
+  @@map("roles")
+}
+
+/// Usuarios del sistema (Dueño, Cocina, Repartidor)
+model User {
+  id            String      @id @default(uuid()) @db.Uuid
+  tenantId      String      @db.Uuid
+  branchId      String?     @db.Uuid
+  rolId         Int
+  nombre        String      @db.VarChar(100)
+  email         String      @unique @db.VarChar(100)
+  passwordHash  String
+  lastLogin     DateTime?
+  isActive      Boolean     @default(true)
+
+  // Relaciones
+  tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch        Branch?     @relation(fields: [branchId], references: [id])
+  rol           Role        @relation(fields: [rolId], references: [id])
+  orders        Order[]
+  inventoryAdjustments InventoryAdjustment[]
+  orderStatusHistories OrderStatusHistory[]
+  cashSessions  CashSession[]
+  auditLogs     AuditLog[]
+
+  @@map("users")
+}
+
+// ============================================================================
+// CATALOG & INVENTORY
+// ============================================================================
+
+/// Categorías de productos
+model Category {
+  id           String      @id @default(uuid()) @db.Uuid
+  tenantId     String      @db.Uuid
+  nombre       String      @db.VarChar(100)
+  ordenVisual  Int?
+
+  // Relaciones
+  tenant       Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products     Product[]
+
+  @@map("categories")
+}
+
+/// Insumos/Ingredientes con control de stock exacto
+model Ingredient {
+  id                      String      @id @default(uuid()) @db.Uuid
+  tenantId                String      @db.Uuid
+  nombre                  String      @db.VarChar(100)
+  unidadMedida            String      @db.VarChar(20) // piezas, gramos, ml, etc
+  stockActual             Decimal     @default(0)
+  stockMinimo             Decimal     @default(0)
+  costoUnitarioPromedio   Decimal     @default(0)
+  lastRestock             DateTime?
+  categoriaInsumo         String?     @db.VarChar(50)
+
+  // Relaciones
+  tenant                  Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  recipes                 Recipe[]
+  inventoryAdjustments    InventoryAdjustment[]
+
+  @@map("ingredients")
+}
+
+/// Productos visibles al cliente (Menú)
+model Product {
+  id              String      @id @default(uuid()) @db.Uuid
+  tenantId        String      @db.Uuid
+  categoryId      String      @db.Uuid
+  nombre          String      @db.VarChar(100)
+  descripcion     String?
+  precioVenta     Decimal
+  imagenUrl       String?
+  isAvailable     Boolean     @default(true)
+  aplicaInventario Boolean    @default(true)
+  taxRuleId       String?     @db.Uuid
+  availableHours  Json?
+
+  // Relaciones
+  category        Category    @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  taxRule         TaxRule?    @relation(fields: [taxRuleId], references: [id])
+  recipes         Recipe[]
+  orderItems      OrderItem[]
+
+  @@map("products")
+}
+
+/// Recetas: Define la "explosión de insumos" para cada producto
+model Recipe {
+  id                  String      @id @default(uuid()) @db.Uuid
+  productId           String      @db.Uuid
+  ingredientId        String      @db.Uuid
+  cantidadRequerida   Decimal
+  
+
+  // Relaciones
+  product             Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  ingredient          Ingredient  @relation(fields: [ingredientId], references: [id])
+
+  @@map("recipes")
+}
+
+/// Ajustes manuales de inventario (mermas, restock manual)
+model InventoryAdjustment {
+  id            String      @id @default(uuid()) @db.Uuid
+  ingredientId  String      @db.Uuid
+  userId        String      @db.Uuid
+  cantidad      Decimal
+  motivo        String?     @db.VarChar(255)
+  fecha         DateTime    @default(now())
+
+  // Relaciones
+  ingredient    Ingredient  @relation(fields: [ingredientId], references: [id])
+  user          User        @relation(fields: [userId], references: [id])
+
+  @@map("inventory_adjustments")
+}
+
+// ============================================================================
+// ORDERS & SALES
+// ============================================================================
+
+/// Estados posibles de una orden
+enum OrderStatus {
+  PENDIENTE
+  CONFIRMADO
+  CANCELADO
+  ENTREGADO
+  REEMBOLSADO
+}
+
+/// Estados de pago
+enum PaymentStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  REFUNDED
+}
+
+/// Encabezado de órdenes
+model Order {
+  id                String        @id @default(uuid()) @db.Uuid
+  tenantId          String        @db.Uuid
+  branchId          String        @db.Uuid
+  userId            String        @db.Uuid
+  customerName      String        @db.VarChar(150)
+  customerWhatsapp  String        @db.VarChar(20)
+  folioNumero       Int           @default(autoincrement())
+  status            OrderStatus   @default(PENDIENTE)
+  subtotal          Decimal       @default(0)
+  impuestosTotal    Decimal       @default(0)
+  descuentoTotal    Decimal?
+  totalNeto         Decimal       @default(0)
+  paymentMethodId   Int?
+  paymentStatus     PaymentStatus @default(UNPAID)
+  createdAt         DateTime      @default(now()) @db.Timestamptz()
+  confirmedAt       DateTime?     @db.Timestamptz()
+  deliveredAt       DateTime?     @db.Timestamptz()
+  notaEspecial      String?
+  customerId        String?       @db.Uuid
+  addressId         String?       @db.Uuid
+  cashSessionId     String?       @db.Uuid
+  couponId          String?       @db.Uuid
+
+  // Relaciones
+  tenant            Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch            Branch        @relation(fields: [branchId], references: [id])
+  user              User          @relation(fields: [userId], references: [id])
+  customer          Customer?     @relation(fields: [customerId], references: [id])
+  address           CustomerAddress? @relation(fields: [addressId], references: [id])
+  paymentMethod     PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+  cashSession       CashSession?  @relation(fields: [cashSessionId], references: [id])
+  coupon            Coupon?       @relation(fields: [couponId], references: [id])
+  orderItems        OrderItem[]
+  orderStatusHistory OrderStatusHistory[]
+  orderPayments     OrderPayment[]
+  notificationLogs  NotificationLog[]
+
+  @@map("orders")
+}
+
+/// Detalle de items en órdenes (con snapshot de precio al momento de la venta)
+model OrderItem {
+  id                      String      @id @default(uuid()) @db.Uuid
+  orderId                 String      @db.Uuid
+  productId               String      @db.Uuid
+  cantidad                Int
+  precioUnitarioSnapshot  Decimal
+  subtotalItem            Decimal
+  tasaIva                 Decimal     @default(16)
+  notasItem               String?
+
+  // Relaciones
+  order                   Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product                 Product     @relation(fields: [productId], references: [id])
+
+  @@map("order_items")
+}
+
+/// Historial de cambios de estado de órdenes
+model OrderStatusHistory {
+  id           String      @id @default(uuid()) @db.Uuid
+  orderId      String      @db.Uuid
+  statusAnterior String?    @db.VarChar(30)
+  statusNuevo  String      @db.VarChar(30)
+  userId       String      @db.Uuid
+  changedAt    DateTime    @default(now()) @db.Timestamptz()
+
+  // Relaciones
+  order        Order       @relation(fields: [orderId], references: [id])
+  user         User        @relation(fields: [userId], references: [id])
+
+  @@map("order_status_history")
+}
+
+/// Métodos de pago disponibles
+model PaymentMethod {
+  id     Int     @id @default(autoincrement())
+  nombre String  @unique @db.VarChar(50)
+
+  // Relaciones
+  orders Order[]
+  orderPayments OrderPayment[]
+
+  @@map("payment_methods")
+}
+
+// ============================================================================
+// CUSTOMERS & CRM
+// ============================================================================
+
+/// Clientes del negocio con historial y programa de lealtad
+model Customer {
+  id                String      @id @default(uuid()) @db.Uuid
+  tenantId          String      @db.Uuid
+  nombre            String      @db.VarChar(100)
+  apellido          String?     @db.VarChar(100)
+  whatsapp          String      @unique @db.VarChar(20)
+  email             String?     @db.VarChar(100)
+  puntosLealtad     Int         @default(0)
+  notasPreferencias String?
+  isActive          Boolean     @default(true)
+  createdAt         DateTime    @default(now()) @db.Timestamptz()
+
+  // Relaciones
+  tenant            Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  addresses         CustomerAddress[]
+  orders            Order[]
+
+  @@map("customers")
+}
+
+/// Direcciones de entrega de clientes
+model CustomerAddress {
+  id                String      @id @default(uuid()) @db.Uuid
+  customerId        String      @db.Uuid
+  etiqueta          String      @default("Casa") @db.VarChar(50)
+  calleAvenida      String?     @db.VarChar(150)
+  numExterior       String?     @db.VarChar(20)
+  numInteriorDepto  String?     @db.VarChar(20)
+  torreEdificio     String?     @db.VarChar(50)
+  referencias       String?
+  codigoPostal      String?     @db.VarChar(10)
+  isDefault         Boolean     @default(false)
+
+  // Relaciones
+  customer          Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  orders            Order[]
+
+  @@map("customer_addresses")
+}
+
+// ============================================================================
+// FINANCE & CASH MANAGEMENT
+// ============================================================================
+
+/// Sesiones de caja (Corte X y Z)
+model CashSession {
+  id                    String      @id @default(uuid()) @db.Uuid
+  tenantId              String      @db.Uuid
+  branchId              String      @db.Uuid
+  userId                String      @db.Uuid
+  openingTime           DateTime    @default(now()) @db.Timestamptz()
+  closingTime           DateTime?   @db.Timestamptz()
+  cashInitial           Decimal     @default(0)
+  cashSalesExpected     Decimal     @default(0)
+  cashFinalReported     Decimal?
+  cashDifference        Decimal?
+  cardSalesExpected     Decimal     @default(0)
+  transferSalesExpected Decimal     @default(0)
+  status                String      @default("OPEN") @db.VarChar(20)
+  notes                 String?
+
+  // Relaciones
+  tenant                Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch                Branch      @relation(fields: [branchId], references: [id])
+  user                  User        @relation(fields: [userId], references: [id])
+  cashMovements         CashMovement[]
+  orders                Order[]
+
+  @@map("cash_sessions")
+}
+
+/// Movimientos de caja (ingresos y egresos durante una sesión)
+model CashMovement {
+  id          String      @id @default(uuid()) @db.Uuid
+  sessionId   String      @db.Uuid
+  type        String      @db.VarChar(20) // INGRESO, EGRESO
+  amount      Decimal
+  concept     String      @db.VarChar(255)
+  createdAt   DateTime    @default(now()) @db.Timestamptz()
+
+  // Relaciones
+  session     CashSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("cash_movements")
+}
+
+/// Impuestos configurables por tenant
+model TaxRule {
+  id        String      @id @default(uuid()) @db.Uuid
+  tenantId  String      @db.Uuid
+  nombre    String      @db.VarChar(50)
+  tasa      Decimal
+  isActive  Boolean     @default(true)
+
+  // Relaciones
+  tenant    Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products  Product[]
+
+  @@map("tax_rules")
+}
+
+/// Cupones y promociones
+model Coupon {
+  id            String      @id @default(uuid()) @db.Uuid
+  tenantId      String      @db.Uuid
+  codigo        String      @db.VarChar(20)
+  descripcion   String?
+  tipoDescuento String      @db.VarChar(20) // PORCENTAJE, FIJO
+  valor         Decimal
+  fechaInicio   DateTime?   @db.Timestamptz()
+  fechaFin      DateTime?   @db.Timestamptz()
+  limiteUsos    Int?
+  usosActuales  Int         @default(0)
+  minimoCompra  Decimal     @default(0)
+  isActive      Boolean     @default(true)
+
+  // Relaciones
+  tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orders        Order[]
+
+  @@unique([tenantId, codigo])
+  @@map("coupons")
+}
+
+/// Pagos de órdenes
+model OrderPayment {
+  id               String      @id @default(uuid()) @db.Uuid
+  orderId          String      @db.Uuid
+  paymentMethodId  Int
+  monto            Decimal
+  referenciaExterna String?    @db.VarChar(100)
+  comprobanteUrl   String?
+  createdAt        DateTime    @default(now()) @db.Timestamptz()
+
+  // Relaciones
+  order            Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  paymentMethod    PaymentMethod @relation(fields: [paymentMethodId], references: [id])
+
+  @@map("order_payments")
+}
+
+// ============================================================================
+// AUDIT & LOGS
+// ============================================================================
+
+/// Auditoría forense de cambios en datos sensibles
+model AuditLog {
+  id              String      @id @default(uuid()) @db.Uuid
+  tenantId        String      @db.Uuid
+  userId          String?     @db.Uuid
+  accion          String      @db.VarChar(20) // INSERT, UPDATE, DELETE
+  tablaAfectada   String      @db.VarChar(50)
+  registroId      String?     @db.Uuid
+  valorAnterior   Json?
+  valorNuevo      Json?
+  ipAddress       String?     @db.VarChar(45)
+  createdAt       DateTime    @default(now()) @db.Timestamptz()
+
+  // Relaciones
+  tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user            User?       @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
+
+/// Log de notificaciones enviadas (WhatsApp, Email, etc)
+model NotificationLog {
+  id            String      @id @default(uuid()) @db.Uuid
+  orderId       String      @db.Uuid
+  type          String?     @db.VarChar(20) // WHATSAPP, EMAIL, SMS
+  recipient     String      @db.VarChar(100)
+  status        String?     @db.VarChar(20) // SENT, FAILED, PENDING
+  errorMessage  String?
+  createdAt     DateTime    @default(now()) @db.Timestamptz()
+
+  // Relaciones
+  order         Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("notification_logs")
+}
