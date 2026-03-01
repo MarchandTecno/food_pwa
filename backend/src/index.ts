@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import { json } from 'body-parser';
 import cors from 'cors';
@@ -6,56 +7,95 @@ import { ApolloServer } from '@apollo/server';
 import { expressMiddleware } from '@apollo/server/express4';
 import { typeDefs, resolvers } from './schema';
 import { createContext } from './context';
+import { validateRuntimeConfig } from './config/env';
+import { buildCorsOptions, buildCspDirectives, graphqlRateLimitMiddleware } from './config/security';
+import { requestIdMiddleware } from './middleware/requestId';
+import { createGraphqlObservabilityPlugin } from './middleware/graphqlObservability';
+import { getMetricsSnapshot } from './utils/metrics';
+import { applyDatabaseErrorPolicy, prisma } from './database';
 
 async function start() {
+  validateRuntimeConfig();
+
   const app = express();
+  const nodeEnv = process.env.NODE_ENV ?? 'development';
+  const isDevelopment = nodeEnv !== 'production';
+  const graphqlPlayground = process.env.GRAPHQL_PLAYGROUND === 'true';
+  const introspectionEnabled = isDevelopment || graphqlPlayground;
   
-  // Configure helmet to allow Apollo resources
   app.use(helmet({
     contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'", "https:"],
-        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", 'https://embeddable-sandbox.cdn.apollographql.com', 'https://cdn.apollographql.com'],
-        styleSrc: ["'self'", "'unsafe-inline'", 'https://embeddable-sandbox.cdn.apollographql.com', 'https://fonts.googleapis.com'],
-        imgSrc: ["'self'", "data:", "https:"],
-        fontSrc: ["'self'", "data:", 'https://fonts.gstatic.com'],
-        connectSrc: ["'self'", 'https:', 'ws:', 'wss:'],
-        manifestSrc: ["'self'", 'https://apollo-server-landing-page.cdn.apollographql.com'],
-        frameSrc: ["'self'", 'https://embeddable-sandbox.cdn.apollographql.com', 'https://sandbox.embed.apollographql.com'],
-        childSrc: ["'self'", 'https://embeddable-sandbox.cdn.apollographql.com'],
-      }
-    }
+      directives: buildCspDirectives(),
+    },
   }));
   
-  app.use(cors());
+  app.use(cors(buildCorsOptions()));
+  app.use(requestIdMiddleware);
   app.use(json());
 
   const server = new ApolloServer({ 
     typeDefs, 
     resolvers,
-    introspection: true,
+    introspection: introspectionEnabled,
+    plugins: [createGraphqlObservabilityPlugin()],
+    formatError: applyDatabaseErrorPolicy,
   } as any);
   await server.start();
 
-  app.use('/graphql', expressMiddleware(server, { 
-    context: async (ctx) => createContext(ctx.req) 
+  app.use('/graphql', graphqlRateLimitMiddleware, expressMiddleware(server, { 
+    context: async (ctx) => createContext(ctx.req, ctx.res) 
   }));
 
   // Health check endpoint
-  app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
-  });
-
-  // Simple GraphQL query endpoint for testing
-  app.post('/graphql-simple', express.json(), async (req, res) => {
-    const { query, variables } = req.body;
+  app.get('/health', async (_req, res) => {
     try {
-      const result = await server.executeOperation({ query, variables });
-      res.json(result);
+      await prisma.$queryRaw`SELECT 1`;
+      res.json({
+        status: 'ok',
+        db: 'up',
+        timestamp: new Date().toISOString(),
+      });
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      res.status(503).json({
+        status: 'degraded',
+        db: 'down',
+        timestamp: new Date().toISOString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   });
+
+  app.get('/metrics', (_req, res) => {
+    res.json({
+      timestamp: new Date().toISOString(),
+      graphql: getMetricsSnapshot(),
+    });
+  });
+
+  const simpleEndpointItem = isDevelopment
+    ? '<li><strong>Simple Query:</strong> POST to <code>/graphql-simple</code></li>'
+    : '';
+  const simpleQuerySection = isDevelopment
+    ? `
+          <div class="section">
+            <h2>Test Query (POST to /graphql-simple)</h2>
+            <pre>{
+  "query": "{ __typename }"
+}</pre>
+          </div>`
+    : '';
+
+  if (isDevelopment) {
+    app.post('/graphql-simple', express.json(), async (req, res) => {
+      const { query, variables } = req.body;
+      try {
+        const result = await server.executeOperation({ query, variables });
+        res.json(result);
+      } catch (error) {
+        res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+  }
 
   // Welcome page with instructions
   app.get('/', (_req, res) => {
@@ -85,16 +125,11 @@ async function start() {
             <ul>
               <li><strong>GraphQL:</strong> <a href="/graphql">/graphql</a> (Apollo Sandbox)</li>
               <li><strong>Health Check:</strong> <a href="/health">/health</a></li>
-              <li><strong>Simple Query:</strong> POST to <code>/graphql-simple</code></li>
+              ${simpleEndpointItem}
             </ul>
           </div>
 
-          <div class="section">
-            <h2>Test Query (POST to /graphql-simple)</h2>
-            <pre>{
-  "query": "{ __typename }"
-}</pre>
-          </div>
+          ${simpleQuerySection}
 
           <div class="section">
             <h2>Authentication</h2>

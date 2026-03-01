@@ -13,6 +13,7 @@
     "prisma:seed": "ts-node --project tsconfig.seed.json prisma/seed.ts",
     "test": "jest",
     "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts"
   },
@@ -45,7 +46,8 @@
     "morgan": "^1.10.0",
     "pg": "^8.11.0",
     "rate-limiter-flexible": "*",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",

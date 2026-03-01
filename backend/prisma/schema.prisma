@@ -181,6 +181,7 @@ model categories {
   tenants      tenants?   @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   products     products[]
 
+  @@index([tenant_id])
   @@schema("public")
 }
 
@@ -314,6 +315,10 @@ model orders {
   tenants              tenants?               @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   users                users?                 @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@index([tenant_id, branch_id, status])
+  @@index([tenant_id, branch_id, created_at])
+  @@index([tenant_id, branch_id, customer_name])
+  @@index([tenant_id, branch_id, total_neto])
   @@schema("public")
 }
 
@@ -342,6 +347,8 @@ model products {
   tax_rules         tax_rules?    @relation(fields: [tax_rule_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   recipes           recipes[]
 
+  @@index([is_available, nombre])
+  @@index([category_id])
   @@schema("public")
 }
 

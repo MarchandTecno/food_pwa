@@ -17,6 +17,12 @@ Backend GraphQL SaaS para gestión de pedidos, inventario y ventas de micro-nego
 
 ## 🏗️ Arquitectura
 
+### Estado Fase 4 (REST)
+
+- Por decisión operativa actual, el backend expone **solo GraphQL**.
+- La carpeta `src/controllers/` se mantiene vacía intencionalmente mientras no exista alcance REST.
+- Si se habilita REST en una fase futura, `controllers` será la capa de entrada HTTP y reutilizará `services` y `database` sin duplicar reglas.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Frontend (React PWA)                      │
@@ -52,6 +58,8 @@ Backend GraphQL SaaS para gestión de pedidos, inventario y ventas de micro-nego
 └─────────────────────────────────────────────────────────────┘
 ```
 
+> Nota: `src/controllers` está reservada para una posible API REST futura; hoy no se usa en runtime.
+
 ---
 
 ## 📦 Stack Tecnológico
@@ -80,6 +88,7 @@ cd backend
 npm install
 cp .env.example .env
 # Editar .env con tus credenciales
+# En producción, usa .env.production.example como plantilla segura
 ```
 
 ### 3. Configurar BD
@@ -263,6 +272,21 @@ mutation {
 ```
 Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 ```
+
+## 🛡️ Seguridad Base (Día 3)
+
+- `JWT_SECRET` es obligatorio en `production` (el servidor no inicia si falta).
+- `JWT_EXPIRATION` controla la expiración de tokens (ej. `15m`, `24h`, `7d`).
+- Manejo de token inválido uniforme: el backend responde como no autenticado.
+- `CORS` por entorno:
+  - `development`: permite orígenes locales controlados (`localhost:3000`, `localhost:5173`).
+  - `production`: requiere `CORS_ORIGINS` (o `CORS_ORIGIN`) configurado.
+- `CSP` por entorno:
+  - `development`: más permisivo para Apollo Sandbox.
+  - `production`: política endurecida (`script-src 'self'`, sin `unsafe-eval`).
+- `Rate limiting` GraphQL:
+  - Siempre activo para `login/register` con `AUTH_RATE_LIMIT_MAX` y `AUTH_RATE_LIMIT_WINDOW_SEC`.
+  - Opcional para mutations sensibles con `ENABLE_SENSITIVE_MUTATION_RATE_LIMIT=true`.
 
 ---
 
