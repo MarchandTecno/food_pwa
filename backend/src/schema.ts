@@ -1,4 +1,5 @@
 import { gql } from 'graphql-tag';
+import { adminTenantMutationResolvers, adminTenantQueryResolvers } from './resolvers/adminTenants.resolver';
 import { authMutationResolvers, authQueryResolvers } from './resolvers/auth.resolver';
 import { orderFieldResolvers, orderMutationResolvers, orderQueryResolvers } from './resolvers/orders.resolver';
 import { productMutationResolvers, productQueryResolvers } from './resolvers/products.resolver';
@@ -9,6 +10,7 @@ export const typeDefs = gql`
     id: String!
     email: String!
     nombre: String
+    role: String
     created_at: String
   }
 
@@ -55,6 +57,49 @@ export const typeDefs = gql`
     email: String
     whatsapp: String
     created_at: String
+  }
+
+  enum TenantSubscriptionStatus {
+    ACTIVE
+    SUSPENDED
+    CANCELED
+  }
+
+  type CssVariable {
+    key: String!
+    value: String!
+  }
+
+  type AdminTenant {
+    id: String!
+    nombre_comercial: String!
+    razon_social: String
+    rfc_tax_id: String
+    email_admin: String!
+    telefono_contacto: String
+    logo_url: String
+    moneda: String
+    region_code: String
+    time_zone: String
+    palette_css: [CssVariable!]!
+    subscription_status: TenantSubscriptionStatus!
+    subscription_note: String
+    subscription_updated_at: String
+    is_active: Boolean!
+    created_at: String
+    updated_at: String
+  }
+
+  type AdminBranch {
+    id: String!
+    tenant_id: String
+    nombre_sucursal: String!
+    direccion_fisica: String
+    horario_apertura: String
+    horario_cierre: String
+    is_open: Boolean!
+    is_suspended: Boolean!
+    suspension_reason: String
   }
 
   type PageInfo {
@@ -116,6 +161,11 @@ export const typeDefs = gql`
     # Tenants
     tenants(limit: Int): [Tenant!]
     tenant(id: String!): Tenant
+
+    # SuperAdmin
+    adminTenants(limit: Int, offset: Int, filter: AdminTenantListFilterInput): [AdminTenant!]
+    adminTenant(id: String!): AdminTenant
+    adminTenantBranches(tenant_id: String!): [AdminBranch!]
   }
 
   type Mutation {
@@ -139,6 +189,14 @@ export const typeDefs = gql`
     ): Order
     updateOrderStatus(id: String!, status: String!): Order
     deleteOrder(id: String!): Boolean
+
+    # SuperAdmin
+    adminCreateTenant(input: AdminCreateTenantInput!): AdminTenant!
+    adminUpdateTenantBranding(tenant_id: String!, input: AdminTenantBrandingInput!): AdminTenant!
+    adminUpdateTenantRegion(tenant_id: String!, input: AdminTenantRegionInput!): AdminTenant!
+    adminUpdateTenantSubscription(tenant_id: String!, status: TenantSubscriptionStatus!, reason: String): AdminTenant!
+    adminCreateBranch(input: AdminCreateBranchInput!): AdminBranch!
+    adminSetBranchSuspended(branch_id: String!, suspended: Boolean!, reason: String): AdminBranch!
   }
 
   input OrderItemInput {
@@ -163,6 +221,50 @@ export const typeDefs = gql`
   input ProductFilterInput {
     is_available: Boolean
     text: String
+  }
+
+  input CssVariableInput {
+    key: String!
+    value: String!
+  }
+
+  input AdminTenantListFilterInput {
+    search: String
+    subscription_status: TenantSubscriptionStatus
+  }
+
+  input AdminCreateTenantInput {
+    nombre_comercial: String!
+    razon_social: String
+    rfc_tax_id: String
+    email_admin: String!
+    telefono_contacto: String
+    logo_url: String
+    moneda: String
+    region_code: String
+    time_zone: String
+    palette_css: [CssVariableInput!]
+    subscription_status: TenantSubscriptionStatus
+  }
+
+  input AdminTenantBrandingInput {
+    logo_url: String
+    palette_css: [CssVariableInput!]
+  }
+
+  input AdminTenantRegionInput {
+    moneda: String
+    region_code: String
+    time_zone: String
+  }
+
+  input AdminCreateBranchInput {
+    tenant_id: String!
+    nombre_sucursal: String!
+    direccion_fisica: String
+    horario_apertura: String
+    horario_cierre: String
+    is_open: Boolean
   }
 
   enum OrderSortField {
@@ -190,6 +292,7 @@ export const typeDefs = gql`
 
 export const resolvers = {
   Query: {
+    ...adminTenantQueryResolvers,
     ...authQueryResolvers,
     ...orderQueryResolvers,
     ...productQueryResolvers,
@@ -197,6 +300,7 @@ export const resolvers = {
   },
 
   Mutation: {
+    ...adminTenantMutationResolvers,
     ...authMutationResolvers,
     ...orderMutationResolvers,
     ...productMutationResolvers,

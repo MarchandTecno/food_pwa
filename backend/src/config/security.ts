@@ -153,7 +153,7 @@ const sensitiveLimiter = new RateLimiterMemory({
 
 const sensitiveMutationNames = (
   process.env.SENSITIVE_MUTATIONS ??
-  'createOrder,updateOrderStatus,deleteOrder,createProduct,updateProduct,deleteProduct'
+  'createOrder,updateOrderStatus,deleteOrder,createProduct,updateProduct,deleteProduct,adminCreateTenant,adminUpdateTenantBranding,adminUpdateTenantRegion,adminUpdateTenantSubscription,adminCreateBranch,adminSetBranchSuspended'
 )
   .split(',')
   .map((value) => value.trim())

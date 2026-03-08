@@ -1,9 +1,11 @@
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 
 async function main() {
   console.log('🌱 Iniciando seed de datos...');
+  const defaultPasswordHash = await bcrypt.hash('ChangeMe123!', 10);
 
   // Limpiar datos existentes (solo desarrollo)
   // await prisma.order.deleteMany({});
@@ -57,6 +59,11 @@ async function main() {
   // ============================================================================
   const roles = await Promise.all([
     prisma.roles.upsert({
+      where: { id: 99 },
+      update: {},
+      create: { id: 99, nombre_rol: 'SuperAdmin' },
+    }),
+    prisma.roles.upsert({
       where: { id: 1 },
       update: {},
       create: { id: 1, nombre_rol: 'Dueño' },
@@ -80,6 +87,24 @@ async function main() {
   // ============================================================================
   const users = await Promise.all([
     prisma.users.upsert({
+      where: { email: 'superadmin@foodflow.local' },
+      update: {
+        tenant_id: null,
+        branch_id: null,
+        rol_id: 99,
+        is_active: true,
+      },
+      create: {
+        tenant_id: null,
+        branch_id: null,
+        rol_id: 99,
+        nombre: 'FoodFlow SuperAdmin',
+        email: 'superadmin@foodflow.local',
+        password_hash: defaultPasswordHash,
+        is_active: true,
+      },
+    }),
+    prisma.users.upsert({
       where: { email: 'owner@hotdogs.com' },
       update: {},
       create: {
@@ -88,7 +113,7 @@ async function main() {
         rol_id: 1, // Dueño
         nombre: 'Carlos García',
         email: 'owner@hotdogs.com',
-        password_hash: '$2b$10$YourHashedPasswordHere',
+        password_hash: defaultPasswordHash,
         is_active: true,
       },
     }),
@@ -101,7 +126,7 @@ async function main() {
         rol_id: 2, // Cocina
         nombre: 'María López',
         email: 'kitchen@hotdogs.com',
-        password_hash: '$2b$10$YourHashedPasswordHere',
+        password_hash: defaultPasswordHash,
         is_active: true,
       },
     }),

@@ -1,0 +1,14 @@
+:root {
+  --bg-app: #0b0f14;
+  --bg-surface: #141a22;
+  --bg-elevated: #1b2430;
+  --text-primary: #f7fbff;
+  --text-secondary: #b9c4d0;
+  --text-muted: #8f9baa;
+  --accent-primary: #ff7a00;
+  --accent-secondary: #66b2ff;
+  --accent-success: #2ec27e;
+  --accent-error: #ff6b6b;
+  --border-default: #2b3542;
+  --border-strong: #435062;
+}

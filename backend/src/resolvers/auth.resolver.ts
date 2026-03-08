@@ -7,7 +7,16 @@ import { toUserOutput } from '../models/user.model';
 export const authQueryResolvers = {
   me: async (_: unknown, __: Record<string, never>, ctx: Context = createContext()) => {
     const userId = getAuthenticatedUserId(ctx);
-    const user = await ctx.prisma.users.findUnique({ where: { id: userId } });
+    const user = await ctx.prisma.users.findUnique({
+      where: { id: userId },
+      include: {
+        roles: {
+          select: {
+            nombre_rol: true,
+          },
+        },
+      },
+    });
     return user ? toUserOutput(user) : null;
   },
 };

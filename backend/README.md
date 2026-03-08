@@ -107,7 +107,22 @@ npm run dev
 ✅ GraphQL Endpoint en `http://localhost:4001/graphql`  
 ✅ Health Check en `http://localhost:4001/health`  
 
-### 5. Primeras Queries (Autenticación)
+### 5. Acceso SuperAdmin (seed local)
+
+Con `npm run prisma:seed` se crea un usuario SuperAdmin inicial:
+
+- Email: `superadmin@foodflow.local`
+- Password: `ChangeMe123!`
+
+> Cambia este password después del primer login en entornos reales.
+
+### 6. Registro público de usuarios
+
+- En `development`, `register` está habilitado por defecto.
+- En `production`, `register` se deshabilita por defecto.
+- Para habilitarlo explícitamente en producción, define `ENABLE_PUBLIC_REGISTER=true`.
+
+### 7. Primeras Queries (Autenticación)
 
 Abre `http://localhost:4001/graphql` y ejecuta:
 

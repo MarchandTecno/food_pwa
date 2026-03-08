@@ -1,0 +1,18 @@
+{
+  "name": "food-pwa-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c cyan,magenta \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "dev:all": "concurrently -n backend,frontend,admin -c cyan,magenta,yellow \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\" \"npm --prefix frontend-admin run dev\"",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:admin": "npm --prefix frontend-admin run dev",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build && npm --prefix frontend-admin run build",
+    "build:admin": "npm --prefix frontend-admin run build",
+    "install:all": "npm --prefix backend install && npm --prefix frontend install && npm --prefix frontend-admin install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

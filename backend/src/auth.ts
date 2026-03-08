@@ -2,12 +2,14 @@ import jwt from 'jsonwebtoken';
 import type { Request } from 'express';
 import type { SignOptions } from 'jsonwebtoken';
 
+export type AppRole = 'superadmin' | 'admin' | 'manager' | 'staff' | 'customer';
+
 export interface AuthPayload {
   userId: string;
   email?: string;
   tenantId?: string;
   branchId?: string;
-  role?: 'admin' | 'manager' | 'staff' | 'customer';
+  role?: AppRole;
 }
 
 export interface AuthContext {
