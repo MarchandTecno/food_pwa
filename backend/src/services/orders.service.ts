@@ -4,6 +4,7 @@ import { getAuthenticatedUserId } from '../utils/authGuard';
 import { badUserInputError, forbiddenError, notFoundError } from '../utils/graphqlErrors';
 import { executeDbOperation, withTransaction } from '../database';
 import { toOrderListOutput, toOrderOutput, type OrderOutput, type OrderWithRelations } from '../models/order.model';
+import { createAuditLog, toAuditJsonRecord } from '../utils/audit';
 
 export interface CreateOrderItemInput {
   product_id: string;
@@ -78,17 +79,6 @@ interface AuthScope {
   tenantId?: string;
   branchId?: string;
 }
-
-interface AuditLogPayload {
-  action: string;
-  tenantId?: string;
-  userId: string;
-  recordId?: string;
-  previousValue?: Prisma.InputJsonValue;
-  newValue?: Prisma.InputJsonValue;
-}
-
-type DbClient = Context['prisma'] | Prisma.TransactionClient;
 
 const MAX_PAGE_SIZE = 100;
 const VALID_ORDER_STATUS = new Set(['PENDIENTE', 'CONFIRMADO', 'EN_PREPARACION', 'COMPLETADO', 'CANCELADO']);
@@ -224,26 +214,6 @@ function buildOrderScopeWhere(userId: string, scope: AuthScope): Prisma.ordersWh
   }
 
   return where;
-}
-
-function normalizeIpForAudit(ip: string | undefined): string | undefined {
-  if (!ip) return undefined;
-  return ip.slice(0, 45);
-}
-
-async function createAuditLog(db: DbClient, ctx: Context, payload: AuditLogPayload): Promise<void> {
-  await db.audit_logs.create({
-    data: {
-      tenant_id: payload.tenantId,
-      user_id: payload.userId,
-      accion: payload.action,
-      tabla_afectada: 'orders',
-      registro_id: payload.recordId,
-      valor_anterior: payload.previousValue,
-      valor_nuevo: payload.newValue,
-      ip_address: normalizeIpForAudit(ctx.requestIp),
-    },
-  });
 }
 
 export async function listOrders(ctx: Context, args: ListOrdersArgs) {
@@ -472,17 +442,20 @@ export async function createOrder(ctx: Context, args: CreateOrderArgs) {
       },
     });
 
-      await createAuditLog(tx, ctx, {
+      await createAuditLog({
+      db: tx,
+      ctx,
+      entity: 'orders',
       action: 'CREATE_ORDER',
       tenantId: scope.tenantId,
-      userId,
+      actorUserId: userId,
       recordId: createdOrder.id,
-      newValue: {
+      newValue: toAuditJsonRecord({
         requestId: ctx.requestId,
         status: createdOrder.status,
         total_neto: Number(createdOrder.total_neto),
         itemCount: createdOrder.order_items.length,
-      } as Prisma.InputJsonValue,
+      }),
     });
 
       return toOrderOutput(createdOrder);
@@ -526,19 +499,22 @@ export async function updateOrderStatus(ctx: Context, args: UpdateOrderStatusArg
       });
     }
 
-      await createAuditLog(tx, ctx, {
+      await createAuditLog({
+      db: tx,
+      ctx,
+      entity: 'orders',
       action: 'UPDATE_ORDER',
       tenantId: existing.tenant_id ?? scope.tenantId,
-      userId,
+      actorUserId: userId,
       recordId: updatedOrder.id,
-      previousValue: {
+      previousValue: toAuditJsonRecord({
         requestId: ctx.requestId,
         status: existing.status,
-      } as Prisma.InputJsonValue,
-      newValue: {
+      }),
+      newValue: toAuditJsonRecord({
         requestId: ctx.requestId,
         status: normalizedStatus,
-      } as Prisma.InputJsonValue,
+      }),
     });
 
       return toOrderOutput(updatedOrder);
@@ -551,21 +527,55 @@ export async function deleteOrder(ctx: Context, args: IdArgs) {
     const userId = getAuthenticatedUserId(ctx);
     const scope = await getAuthenticatedScope(ctx, userId);
 
-    const existing = await ctx.prisma.orders.findFirst({
-      where: {
-        id: args.id,
-        ...buildOrderScopeWhere(userId, scope),
-      },
-      select: { id: true },
-    });
+    return withTransaction(ctx.prisma, async (tx) => {
+      const existing = await tx.orders.findFirst({
+        where: {
+          id: args.id,
+          ...buildOrderScopeWhere(userId, scope),
+        },
+        select: {
+          id: true,
+          tenant_id: true,
+          customer_name: true,
+          customer_whatsapp: true,
+          status: true,
+          total_neto: true,
+        },
+      });
 
-    if (!existing) {
-      throw notFoundError(`Resource not found: order ${args.id}`);
-    }
+      if (!existing) {
+        throw notFoundError(`Resource not found: order ${args.id}`);
+      }
 
-    await ctx.prisma.orders.delete({
-      where: { id: args.id },
+      await tx.notification_logs.deleteMany({
+        where: { order_id: args.id },
+      });
+
+      await tx.order_status_history.deleteMany({
+        where: { order_id: args.id },
+      });
+
+      await tx.orders.delete({
+        where: { id: args.id },
+      });
+
+      await createAuditLog({
+        db: tx,
+        ctx,
+        entity: 'orders',
+        action: 'DELETE_ORDER',
+        tenantId: existing.tenant_id ?? scope.tenantId,
+        actorUserId: userId,
+        recordId: existing.id,
+        previousValue: toAuditJsonRecord({
+          customer_name: existing.customer_name,
+          customer_whatsapp: existing.customer_whatsapp,
+          status: existing.status,
+          total_neto: Number(existing.total_neto),
+        }),
+      });
+
+      return true;
     });
-    return true;
   });
 }

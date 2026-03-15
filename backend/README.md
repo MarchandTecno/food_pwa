@@ -301,6 +301,10 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
   - `production`: política endurecida (`script-src 'self'`, sin `unsafe-eval`).
 - `Rate limiting` GraphQL:
   - Siempre activo para `login/register` con `AUTH_RATE_LIMIT_MAX` y `AUTH_RATE_LIMIT_WINDOW_SEC`.
+  - Siempre activo para mutaciones de credenciales admin (`adminCreateUser`, `adminResetUserPassword`) con `ADMIN_CREDENTIAL_RATE_LIMIT_MAX` y `ADMIN_CREDENTIAL_RATE_LIMIT_WINDOW_SEC`.
+  - Se puede desactivar explícitamente solo para entornos controlados con `ENABLE_ADMIN_CREDENTIAL_RATE_LIMIT=false`.
+  - Soporta almacenamiento distribuido con Redis para consistencia entre instancias (`ENABLE_DISTRIBUTED_RATE_LIMIT=true` + `REDIS_URL`).
+  - Si Redis falla, `rate-limiter-flexible` usa `insuranceLimiter` en memoria como respaldo local.
   - Opcional para mutations sensibles con `ENABLE_SENSITIVE_MUTATION_RATE_LIMIT=true`.
 
 ---

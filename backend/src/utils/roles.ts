@@ -1,5 +1,7 @@
 import type { AppRole } from '../auth';
 
+export type GlobalRoleCode = 'SUPERADMIN' | 'OWNER' | 'KITCHEN' | 'DELIVERY';
+
 const ROLE_ALIASES: Record<string, AppRole> = {
   superadmin: 'superadmin',
   'super admin': 'superadmin',
@@ -28,6 +30,32 @@ const ROLE_ALIASES: Record<string, AppRole> = {
   cliente: 'customer',
 };
 
+const GLOBAL_ROLE_ALIASES: Record<string, GlobalRoleCode> = {
+  superadmin: 'SUPERADMIN',
+  'super admin': 'SUPERADMIN',
+  super_admin: 'SUPERADMIN',
+  platformadmin: 'SUPERADMIN',
+  'platform admin': 'SUPERADMIN',
+  platform_admin: 'SUPERADMIN',
+  saasadmin: 'SUPERADMIN',
+  saas_admin: 'SUPERADMIN',
+
+  owner: 'OWNER',
+  dueno: 'OWNER',
+  'dueño': 'OWNER',
+  admin: 'OWNER',
+  manager: 'OWNER',
+  gerente: 'OWNER',
+
+  kitchen: 'KITCHEN',
+  cocina: 'KITCHEN',
+  staff: 'KITCHEN',
+
+  delivery: 'DELIVERY',
+  repartidor: 'DELIVERY',
+  courier: 'DELIVERY',
+};
+
 function normalizeRawRole(rawRole: string): string {
   return rawRole
     .trim()
@@ -39,6 +67,11 @@ function normalizeRawRole(rawRole: string): string {
 export function normalizeRole(rawRole?: string | null): AppRole | undefined {
   if (!rawRole) return undefined;
   return ROLE_ALIASES[normalizeRawRole(rawRole)];
+}
+
+export function normalizeGlobalRole(rawRole?: string | null): GlobalRoleCode | undefined {
+  if (!rawRole) return undefined;
+  return GLOBAL_ROLE_ALIASES[normalizeRawRole(rawRole)];
 }
 
 export function isSuperAdminRole(rawRole?: string | null): boolean {

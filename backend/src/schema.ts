@@ -1,5 +1,7 @@
 import { gql } from 'graphql-tag';
+import { adminObservabilityQueryResolvers } from './resolvers/adminObservability.resolver';
 import { adminTenantMutationResolvers, adminTenantQueryResolvers } from './resolvers/adminTenants.resolver';
+import { adminUserMutationResolvers, adminUserQueryResolvers } from './resolvers/adminUsers.resolver';
 import { authMutationResolvers, authQueryResolvers } from './resolvers/auth.resolver';
 import { orderFieldResolvers, orderMutationResolvers, orderQueryResolvers } from './resolvers/orders.resolver';
 import { productMutationResolvers, productQueryResolvers } from './resolvers/products.resolver';
@@ -65,6 +67,13 @@ export const typeDefs = gql`
     CANCELED
   }
 
+  enum AdminGlobalRole {
+    SUPERADMIN
+    OWNER
+    KITCHEN
+    DELIVERY
+  }
+
   type CssVariable {
     key: String!
     value: String!
@@ -100,6 +109,123 @@ export const typeDefs = gql`
     is_open: Boolean!
     is_suspended: Boolean!
     suspension_reason: String
+  }
+
+  type AdminRolePermission {
+    role: AdminGlobalRole!
+    hierarchy_level: Int!
+    label: String!
+    scope: String!
+    permissions: [String!]!
+  }
+
+  type AdminUserRecord {
+    id: String!
+    nombre: String!
+    email: String!
+    role: AdminGlobalRole
+    role_label: String!
+    tenant_id: String
+    tenant_nombre: String
+    branch_id: String
+    branch_nombre: String
+    is_active: Boolean!
+    last_login: String
+    created_at: String
+  }
+
+  type AdminSessionLog {
+    id: String!
+    user_id: String
+    user_email: String
+    user_nombre: String
+    tenant_id: String
+    tenant_nombre: String
+    role: AdminGlobalRole
+    action: String!
+    ip_address: String
+    happened_at: String
+    last_access: String
+  }
+
+  type AdminSessionLogPage {
+    items: [AdminSessionLog!]!
+    pageInfo: PageInfo!
+  }
+
+  type AdminAuditLog {
+    id: String!
+    actor_user_id: String
+    actor_user_email: String
+    actor_user_nombre: String
+    actor_role: AdminGlobalRole
+    tenant_id: String
+    tenant_nombre: String
+    entity: String!
+    action: String!
+    record_id: String
+    ip_address: String
+    happened_at: String
+    previous_value: String
+    new_value: String
+  }
+
+  type AdminAuditLogPage {
+    items: [AdminAuditLog!]!
+    pageInfo: PageInfo!
+  }
+
+  type AdminMetricCount {
+    label: String!
+    count: Int!
+  }
+
+  type AdminMetricPoint {
+    timestamp: String!
+    label: String!
+    value: Float!
+  }
+
+  type AdminMetricBreakdown {
+    label: String!
+    count: Int!
+    avg_ms: Float!
+    min_ms: Float!
+    max_ms: Float!
+  }
+
+  type AdminHealthSnapshot {
+    status: String!
+    db: String!
+    uptime_seconds: Int!
+    checked_at: String!
+    db_ping_ms: Float
+    error: String
+  }
+
+  type AdminServerMetrics {
+    total_requests: Int!
+    avg_latency_ms: Float!
+    peak_latency_ms: Float!
+    recent_latency: [AdminMetricPoint!]!
+    operations: [AdminMetricBreakdown!]!
+    errors_by_code: [AdminMetricCount!]!
+  }
+
+  type AdminDatabaseMetrics {
+    total_queries: Int!
+    avg_query_ms: Float!
+    slow_queries: Int!
+    last_query_at: String
+    recent_queries: [AdminMetricPoint!]!
+    queries_by_type: [AdminMetricBreakdown!]!
+  }
+
+  type AdminObservabilitySnapshot {
+    checked_at: String!
+    health: AdminHealthSnapshot!
+    server: AdminServerMetrics!
+    database: AdminDatabaseMetrics!
   }
 
   type PageInfo {
@@ -166,6 +292,12 @@ export const typeDefs = gql`
     adminTenants(limit: Int, offset: Int, filter: AdminTenantListFilterInput): [AdminTenant!]
     adminTenant(id: String!): AdminTenant
     adminTenantBranches(tenant_id: String!): [AdminBranch!]
+    adminRolePermissions: [AdminRolePermission!]!
+    adminUsers(limit: Int, offset: Int, filter: AdminUserFilterInput): [AdminUserRecord!]
+    adminSessionLogs(limit: Int, offset: Int, filter: AdminSessionLogFilterInput): [AdminSessionLog!]
+    adminSessionLogsPage(limit: Int, offset: Int, filter: AdminSessionLogFilterInput): AdminSessionLogPage!
+    adminAuditLogsPage(limit: Int, offset: Int, filter: AdminAuditLogFilterInput): AdminAuditLogPage!
+    adminObservabilitySnapshot: AdminObservabilitySnapshot!
   }
 
   type Mutation {
@@ -197,6 +329,9 @@ export const typeDefs = gql`
     adminUpdateTenantSubscription(tenant_id: String!, status: TenantSubscriptionStatus!, reason: String): AdminTenant!
     adminCreateBranch(input: AdminCreateBranchInput!): AdminBranch!
     adminSetBranchSuspended(branch_id: String!, suspended: Boolean!, reason: String): AdminBranch!
+    adminCreateUser(input: AdminCreateUserInput!): AdminUserRecord!
+    adminUpdateUserAssignment(input: AdminUpdateUserAssignmentInput!): AdminUserRecord!
+    adminResetUserPassword(user_id: String!, new_password: String!): Boolean!
   }
 
   input OrderItemInput {
@@ -267,6 +402,51 @@ export const typeDefs = gql`
     is_open: Boolean
   }
 
+  input AdminUserFilterInput {
+    search: String
+    tenant_id: String
+    branch_id: String
+    role: AdminGlobalRole
+    is_active: Boolean
+  }
+
+  input AdminCreateUserInput {
+    nombre: String!
+    email: String!
+    password: String!
+    role: AdminGlobalRole!
+    tenant_id: String
+    branch_id: String
+    is_active: Boolean
+  }
+
+  input AdminUpdateUserAssignmentInput {
+    user_id: String!
+    role: AdminGlobalRole
+    tenant_id: String
+    branch_id: String
+    is_active: Boolean
+  }
+
+  input AdminSessionLogFilterInput {
+    tenant_id: String
+    user_id: String
+    role: AdminGlobalRole
+    action: String
+    search: String
+  }
+
+  input AdminAuditLogFilterInput {
+    tenant_id: String
+    actor_user_id: String
+    actor_search: String
+    entity: String
+    action: String
+    search: String
+    from: String
+    to: String
+  }
+
   enum OrderSortField {
     created_at
     total_neto
@@ -292,6 +472,8 @@ export const typeDefs = gql`
 
 export const resolvers = {
   Query: {
+    ...adminObservabilityQueryResolvers,
+    ...adminUserQueryResolvers,
     ...adminTenantQueryResolvers,
     ...authQueryResolvers,
     ...orderQueryResolvers,
@@ -300,6 +482,7 @@ export const resolvers = {
   },
 
   Mutation: {
+    ...adminUserMutationResolvers,
     ...adminTenantMutationResolvers,
     ...authMutationResolvers,
     ...orderMutationResolvers,

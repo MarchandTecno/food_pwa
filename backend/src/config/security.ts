@@ -1,6 +1,9 @@
 import type { CorsOptions } from 'cors';
 import type { Request, Response, NextFunction } from 'express';
-import { RateLimiterMemory } from 'rate-limiter-flexible';
+import Redis from 'ioredis';
+import { RateLimiterMemory, RateLimiterRedis } from 'rate-limiter-flexible';
+import { verifyToken } from '../auth';
+import { logInfo, logWarn } from '../utils/logger';
 
 const NODE_ENV = process.env.NODE_ENV ?? 'development';
 const IS_PRODUCTION = NODE_ENV === 'production';
@@ -141,29 +144,163 @@ type GraphQLBody = {
   operationName?: string;
 };
 
-const authLimiter = new RateLimiterMemory({
-  points: Number(process.env.AUTH_RATE_LIMIT_MAX ?? 10),
-  duration: Number(process.env.AUTH_RATE_LIMIT_WINDOW_SEC ?? 60),
-});
+type RateLimiterLike = {
+  consume: (key: string) => Promise<unknown>;
+};
 
-const sensitiveLimiter = new RateLimiterMemory({
-  points: Number(process.env.SENSITIVE_RATE_LIMIT_MAX ?? 30),
-  duration: Number(process.env.SENSITIVE_RATE_LIMIT_WINDOW_SEC ?? 60),
-});
+function parseMutationNameList(rawValue: string | undefined, fallbackValue: string): string[] {
+  return (rawValue ?? fallbackValue)
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
 
-const sensitiveMutationNames = (
-  process.env.SENSITIVE_MUTATIONS ??
-  'createOrder,updateOrderStatus,deleteOrder,createProduct,updateProduct,deleteProduct,adminCreateTenant,adminUpdateTenantBranding,adminUpdateTenantRegion,adminUpdateTenantSubscription,adminCreateBranch,adminSetBranchSuspended'
-)
-  .split(',')
-  .map((value) => value.trim())
-  .filter(Boolean);
+function parseBooleanEnv(name: string, defaultValue: boolean): boolean {
+  const value = process.env[name];
+  if (value === undefined) return defaultValue;
+  return value.trim().toLowerCase() === 'true';
+}
 
-const sensitiveRateLimitEnabled = process.env.ENABLE_SENSITIVE_MUTATION_RATE_LIMIT === 'true';
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  const rawValue = process.env[name];
+  if (!rawValue) return fallback;
+
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+
+  return Math.floor(parsed);
+}
+
+function parseOptionalNonEmptyEnv(name: string): string | undefined {
+  const value = process.env[name];
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const authRateLimitMax = parsePositiveIntegerEnv('AUTH_RATE_LIMIT_MAX', 10);
+const authRateLimitWindowSec = parsePositiveIntegerEnv('AUTH_RATE_LIMIT_WINDOW_SEC', 60);
+
+const adminCredentialRateLimitMax = parsePositiveIntegerEnv('ADMIN_CREDENTIAL_RATE_LIMIT_MAX', 6);
+const adminCredentialRateLimitWindowSec = parsePositiveIntegerEnv('ADMIN_CREDENTIAL_RATE_LIMIT_WINDOW_SEC', 60);
+
+const sensitiveRateLimitMax = parsePositiveIntegerEnv('SENSITIVE_RATE_LIMIT_MAX', 30);
+const sensitiveRateLimitWindowSec = parsePositiveIntegerEnv('SENSITIVE_RATE_LIMIT_WINDOW_SEC', 60);
+
+const distributedRateLimitEnabled = parseBooleanEnv('ENABLE_DISTRIBUTED_RATE_LIMIT', true);
+const redisUrl = parseOptionalNonEmptyEnv('REDIS_URL');
+const redisConnectTimeoutMs = parsePositiveIntegerEnv('REDIS_CONNECT_TIMEOUT_MS', 1000);
+
+function buildMemoryLimiter(keyPrefix: string, points: number, duration: number): RateLimiterMemory {
+  return new RateLimiterMemory({
+    keyPrefix,
+    points,
+    duration,
+  });
+}
+
+let sharedRedisClient: Redis | undefined;
+let loggedRedisReady = false;
+
+if (distributedRateLimitEnabled && redisUrl) {
+  sharedRedisClient = new Redis(redisUrl, {
+    lazyConnect: true,
+    enableOfflineQueue: false,
+    maxRetriesPerRequest: 1,
+    connectTimeout: redisConnectTimeoutMs,
+  });
+
+  sharedRedisClient.on('ready', () => {
+    if (loggedRedisReady) return;
+    loggedRedisReady = true;
+    logInfo({
+      event: 'security.rate_limit.redis_ready',
+      message: 'Distributed Redis rate limiter enabled',
+    });
+  });
+
+  sharedRedisClient.on('error', (error) => {
+    logWarn({
+      event: 'security.rate_limit.redis_error',
+      message: 'Redis rate limiter error, using in-memory insurance limiter',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
+
+export async function disposeGraphqlRateLimitResources(): Promise<void> {
+  if (!sharedRedisClient) return;
+
+  const redisClient = sharedRedisClient;
+  sharedRedisClient = undefined;
+  loggedRedisReady = false;
+
+  redisClient.removeAllListeners();
+
+  try {
+    await redisClient.quit();
+  } catch {
+    redisClient.disconnect();
+  }
+}
+
+function buildRateLimiter(keyPrefix: string, points: number, duration: number): RateLimiterLike {
+  const insuranceLimiter = buildMemoryLimiter(`${keyPrefix}:insurance`, points, duration);
+
+  if (!sharedRedisClient) {
+    return buildMemoryLimiter(keyPrefix, points, duration);
+  }
+
+  return new RateLimiterRedis({
+    storeClient: sharedRedisClient,
+    keyPrefix,
+    points,
+    duration,
+    insuranceLimiter,
+  }) as unknown as RateLimiterLike;
+}
+
+const authLimiter = buildRateLimiter('auth', authRateLimitMax, authRateLimitWindowSec);
+
+const sensitiveLimiter = buildRateLimiter('sensitive', sensitiveRateLimitMax, sensitiveRateLimitWindowSec);
+
+const adminCredentialLimiter = buildRateLimiter(
+  'admin-credentials',
+  adminCredentialRateLimitMax,
+  adminCredentialRateLimitWindowSec,
+);
+
+const sensitiveMutationNames = parseMutationNameList(
+  process.env.SENSITIVE_MUTATIONS,
+  'createOrder,updateOrderStatus,deleteOrder,createProduct,updateProduct,deleteProduct,adminCreateTenant,adminUpdateTenantBranding,adminUpdateTenantRegion,adminUpdateTenantSubscription,adminCreateBranch,adminSetBranchSuspended',
+);
+
+const adminCredentialMutationNames = parseMutationNameList(
+  process.env.ADMIN_CREDENTIAL_MUTATIONS,
+  'adminCreateUser,adminResetUserPassword',
+);
+
+const sensitiveRateLimitEnabled = parseBooleanEnv('ENABLE_SENSITIVE_MUTATION_RATE_LIMIT', false);
+const adminCredentialRateLimitEnabled = parseBooleanEnv('ENABLE_ADMIN_CREDENTIAL_RATE_LIMIT', true);
 
 function isMutationWithField(query: string, mutationName: string): boolean {
-  const pattern = new RegExp(`\\b${mutationName}\\s*\\(`);
+  const pattern = new RegExp(`\\b${escapeRegExp(mutationName)}\\s*\\(`);
   return /\bmutation\b/.test(query) && pattern.test(query);
+}
+
+function isNamedMutationRequest(body: GraphQLBody, mutationNames: string[]): boolean {
+  const query = body.query ?? '';
+  const operationName = body.operationName ?? '';
+
+  if (/\bmutation\b/.test(query) && mutationNames.some((name) => new RegExp(`\\b${escapeRegExp(name)}\\b`).test(operationName))) {
+    return true;
+  }
+
+  return mutationNames.some((name) => isMutationWithField(query, name));
 }
 
 function isAuthMutationRequest(body: GraphQLBody): boolean {
@@ -178,14 +315,11 @@ function isAuthMutationRequest(body: GraphQLBody): boolean {
 }
 
 function isSensitiveMutationRequest(body: GraphQLBody): boolean {
-  const query = body.query ?? '';
-  const operationName = body.operationName ?? '';
+  return isNamedMutationRequest(body, sensitiveMutationNames);
+}
 
-  if (/\bmutation\b/.test(query) && sensitiveMutationNames.some((name) => new RegExp(`\\b${name}\\b`).test(operationName))) {
-    return true;
-  }
-
-  return sensitiveMutationNames.some((name) => isMutationWithField(query, name));
+function isAdminCredentialMutationRequest(body: GraphQLBody): boolean {
+  return isNamedMutationRequest(body, adminCredentialMutationNames);
 }
 
 function getRequestKey(req: Request): string {
@@ -195,6 +329,21 @@ function getRequestKey(req: Request): string {
   }
 
   return req.ip || req.socket.remoteAddress || 'unknown';
+}
+
+function getAuthorizationHeader(req: Request): string | undefined {
+  const header = req.headers.authorization;
+  if (Array.isArray(header)) return header[0];
+  return header;
+}
+
+function getActorRateLimitKey(req: Request, requestKey: string): string {
+  const tokenPayload = verifyToken(getAuthorizationHeader(req));
+  if (tokenPayload?.userId) {
+    return `user:${tokenPayload.userId}`;
+  }
+
+  return `ip:${requestKey}`;
 }
 
 function tooManyRequests(res: Response): void {
@@ -216,10 +365,15 @@ export async function graphqlRateLimitMiddleware(req: Request, res: Response, ne
   }
 
   const requestKey = getRequestKey(req);
+  const actorRateLimitKey = getActorRateLimitKey(req, requestKey);
 
   try {
     if (isAuthMutationRequest(body)) {
       await authLimiter.consume(`auth:${requestKey}`);
+    }
+
+    if (adminCredentialRateLimitEnabled && isAdminCredentialMutationRequest(body)) {
+      await adminCredentialLimiter.consume(`admin-credentials:${actorRateLimitKey}`);
     }
 
     if (sensitiveRateLimitEnabled && isSensitiveMutationRequest(body)) {

@@ -1,8 +1,10 @@
 import { ApolloServer } from '@apollo/server';
+import { randomUUID } from 'crypto';
 import type { NextFunction, Request, Response } from 'express';
+import { generateToken } from '../src/auth';
 import { typeDefs, resolvers } from '../src/schema';
 import { createContext, prisma } from '../src/context';
-import { graphqlRateLimitMiddleware } from '../src/config/security';
+import { disposeGraphqlRateLimitResources, graphqlRateLimitMiddleware } from '../src/config/security';
 import { createGraphqlObservabilityPlugin } from '../src/middleware/graphqlObservability';
 
 type SingleResult = {
@@ -88,6 +90,46 @@ async function registerAndGetToken(email: string, nombre: string): Promise<strin
   return String(token);
 }
 
+async function getSuperAdminToken(): Promise<string> {
+  const role =
+    (await prisma.roles.findFirst({
+      where: {
+        nombre_rol: {
+          equals: 'SuperAdmin',
+          mode: 'insensitive',
+        },
+      },
+    })) ??
+    (await prisma.roles.create({
+      data: { nombre_rol: 'SuperAdmin' },
+    }));
+
+  const user = await prisma.users.upsert({
+    where: { email: 'integration.superadmin@foodflow.local' },
+    update: {
+      rol_id: role.id,
+      tenant_id: null,
+      branch_id: null,
+      is_active: true,
+    },
+    create: {
+      nombre: 'Integration SuperAdmin',
+      email: 'integration.superadmin@foodflow.local',
+      password_hash: 'integration-superadmin-not-used',
+      rol_id: role.id,
+      tenant_id: null,
+      branch_id: null,
+      is_active: true,
+    },
+  });
+
+  return generateToken({
+    userId: user.id,
+    email: user.email,
+    role: 'superadmin',
+  });
+}
+
 describe('GraphQL integration', () => {
   beforeAll(async () => {
     server = new ApolloServer({
@@ -115,6 +157,7 @@ describe('GraphQL integration', () => {
 
   afterAll(async () => {
     await server.stop();
+    await disposeGraphqlRateLimitResources();
     await prisma.$disconnect();
   });
 
@@ -1031,6 +1074,226 @@ describe('GraphQL integration', () => {
     expect(actions).toEqual(expect.arrayContaining(['CREATE_ORDER', 'UPDATE_ORDER']));
   });
 
+  it('returns filtered audit logs for order deletions within a date window', async () => {
+    const now = Date.now();
+    const token = await registerAndGetToken(`audit-delete.${now}@foodflow.test`, 'Audit Delete User');
+    const superAdminToken = await getSuperAdminToken();
+
+    const product = await prisma.products.findFirst({ where: { is_available: true } });
+    if (!product) {
+      throw new Error('Expected available product for audit delete test');
+    }
+
+    const createResult = await executeGraphQL(
+      `
+      mutation CreateOrderForAuditDelete($productId: String!) {
+        createOrder(
+          customer_name: "Cliente Auditoría"
+          customer_whatsapp: "+56945555555"
+          items: [{ product_id: $productId, cantidad: 1 }]
+        ) {
+          id
+        }
+      }
+      `,
+      { productId: product.id },
+      token,
+    );
+
+    expect(createResult.errors).toBeUndefined();
+    const orderId = String((createResult.data?.createOrder as Record<string, unknown>).id);
+
+    const deleteResult = await executeGraphQL(
+      `
+      mutation DeleteOrderForAudit($id: String!) {
+        deleteOrder(id: $id)
+      }
+      `,
+      { id: orderId },
+      token,
+    );
+
+    expect(deleteResult.errors).toBeUndefined();
+    expect(deleteResult.data?.deleteOrder).toBe(true);
+
+    const from = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const to = new Date(Date.now() + 60 * 1000).toISOString();
+
+    const auditResult = await executeGraphQL(
+      `
+      query AdminAuditLogs($filter: AdminAuditLogFilterInput) {
+        adminAuditLogsPage(limit: 10, offset: 0, filter: $filter) {
+          items {
+            action
+            entity
+            record_id
+            actor_user_email
+            previous_value
+          }
+          pageInfo {
+            total
+          }
+        }
+      }
+      `,
+      {
+        filter: {
+          entity: 'orders',
+          action: 'DELETE_ORDER',
+          actor_search: `audit-delete.${now}@foodflow.test`,
+          from,
+          to,
+        },
+      },
+      superAdminToken,
+    );
+
+    expect(auditResult.errors).toBeUndefined();
+
+    const auditPage = auditResult.data?.adminAuditLogsPage as Record<string, unknown>;
+    const items = ((auditPage.items as Array<Record<string, unknown>>) ?? []).map((item) => ({
+      action: String(item.action),
+      entity: String(item.entity),
+      recordId: String(item.record_id),
+      actorEmail: String(item.actor_user_email),
+      previousValue: String(item.previous_value),
+    }));
+
+    expect(
+      items.some(
+        (item) =>
+          item.action === 'DELETE_ORDER' &&
+          item.entity === 'orders' &&
+          item.recordId === orderId &&
+          item.actorEmail === `audit-delete.${now}@foodflow.test` &&
+          item.previousValue.includes('Cliente Auditoría'),
+      ),
+    ).toBe(true);
+  });
+
+  it('maps inventory domain aliases when filtering admin audit logs', async () => {
+    const superAdminToken = await getSuperAdminToken();
+    const markerRecordId = randomUUID();
+
+    await prisma.audit_logs.create({
+      data: {
+        accion: 'INVENTORY_CREATE',
+        tabla_afectada: 'inventory_adjustments',
+        registro_id: markerRecordId,
+        valor_nuevo: {
+          marker: markerRecordId,
+          reason: 'integration-domain-alias-test',
+        },
+      },
+    });
+
+    const aliasResult = await executeGraphQL(
+      `
+      query InventoryDomainAlias($filter: AdminAuditLogFilterInput) {
+        adminAuditLogsPage(limit: 20, offset: 0, filter: $filter) {
+          items {
+            action
+            entity
+            record_id
+          }
+        }
+      }
+      `,
+      {
+        filter: {
+          entity: 'inventory',
+          action: 'INVENTORY_CREATE',
+        },
+      },
+      superAdminToken,
+    );
+
+    expect(aliasResult.errors).toBeUndefined();
+
+    const page = aliasResult.data?.adminAuditLogsPage as Record<string, unknown>;
+    const items = (page.items as Array<Record<string, unknown>>) ?? [];
+
+    expect(
+      items.some(
+        (item) =>
+          String(item.record_id) === markerRecordId &&
+          String(item.entity) === 'inventory_adjustments' &&
+          String(item.action) === 'INVENTORY_CREATE',
+      ),
+    ).toBe(true);
+  });
+
+  it('returns admin observability snapshot with server and database metrics', async () => {
+    const superAdminToken = await getSuperAdminToken();
+
+    const warmupResult = await executeGraphQL(
+      `
+      query WarmupProductsMetrics {
+        products(limit: 2) {
+          id
+        }
+      }
+      `,
+    );
+
+    expect(warmupResult.errors).toBeUndefined();
+
+    const observabilityResult = await executeGraphQL(
+      `
+      query AdminObservabilitySnapshot {
+        adminObservabilitySnapshot {
+          health {
+            status
+            db
+            uptime_seconds
+            db_ping_ms
+          }
+          server {
+            total_requests
+            avg_latency_ms
+            recent_latency {
+              label
+              value
+            }
+            operations {
+              label
+              count
+            }
+          }
+          database {
+            total_queries
+            avg_query_ms
+            recent_queries {
+              label
+              value
+            }
+            queries_by_type {
+              label
+              count
+            }
+          }
+        }
+      }
+      `,
+      undefined,
+      superAdminToken,
+    );
+
+    expect(observabilityResult.errors).toBeUndefined();
+
+    const snapshot = observabilityResult.data?.adminObservabilitySnapshot as Record<string, unknown>;
+    const health = snapshot.health as Record<string, unknown>;
+    const serverMetrics = snapshot.server as Record<string, unknown>;
+    const databaseMetrics = snapshot.database as Record<string, unknown>;
+
+    expect(health.status).toBe('ok');
+    expect(health.db).toBe('up');
+    expect(Number(serverMetrics.total_requests)).toBeGreaterThan(0);
+    expect(Number(databaseMetrics.total_queries)).toBeGreaterThan(0);
+    expect(((serverMetrics.recent_latency as Array<Record<string, unknown>>) ?? []).length).toBeGreaterThan(0);
+    expect(((databaseMetrics.queries_by_type as Array<Record<string, unknown>>) ?? []).length).toBeGreaterThan(0);
+  });
+
   it('enforces tenant isolation between users from different tenants', async () => {
     const now = Date.now();
     const emailA = `tenant-a.${now}@foodflow.test`;
@@ -1244,6 +1507,57 @@ describe('GraphQL integration', () => {
 
     const authLimit = Number(process.env.AUTH_RATE_LIMIT_MAX ?? 10);
     for (let index = 0; index < authLimit; index += 1) {
+      const next = await invokeMiddleware();
+      expect(next).toHaveBeenCalled();
+      expect(blockedStatusCode).toBeNull();
+    }
+
+    const blockedNext = await invokeMiddleware();
+    expect(blockedNext).not.toHaveBeenCalled();
+    expect(blockedStatusCode).toBe(429);
+  });
+
+  it('blocks admin credential mutation requests after dedicated rate-limit threshold', async () => {
+    const query =
+      'mutation { adminResetUserPassword(user_id: "rate-limit-user", new_password: "StrongPassword123!@#") }';
+
+    let blockedStatusCode: number | null = null;
+
+    const invokeMiddleware = async () => {
+      const req = {
+        body: { query },
+        headers: {},
+        ip: '127.0.0.25',
+        socket: { remoteAddress: '127.0.0.25' },
+      } as unknown as Request;
+
+      const res = {
+        status(code: number) {
+          blockedStatusCode = code;
+          return this;
+        },
+        json() {
+          return this;
+        },
+      } as unknown as Response;
+
+      const next = jest.fn() as unknown as NextFunction;
+      await graphqlRateLimitMiddleware(req, res, next);
+      return next;
+    };
+
+    const adminCredentialRateLimitEnabled =
+      (process.env.ENABLE_ADMIN_CREDENTIAL_RATE_LIMIT ?? 'true').trim().toLowerCase() === 'true';
+
+    if (!adminCredentialRateLimitEnabled) {
+      const next = await invokeMiddleware();
+      expect(next).toHaveBeenCalled();
+      expect(blockedStatusCode).toBeNull();
+      return;
+    }
+
+    const adminCredentialLimit = Number(process.env.ADMIN_CREDENTIAL_RATE_LIMIT_MAX ?? 6);
+    for (let index = 0; index < adminCredentialLimit; index += 1) {
       const next = await invokeMiddleware();
       expect(next).toHaveBeenCalled();
       expect(blockedStatusCode).toBeNull();

@@ -341,7 +341,10 @@ Access the Apollo Sandbox at: `http://localhost:4001/graphql`
 
 ## Rate Limiting
 
-Currently: No rate limiting applied (should be configured before production)
+Current protections:
+- Always-on for `login/register`.
+- Always-on for admin credential mutations (`adminCreateUser`, `adminResetUserPassword`).
+- Optional for broader sensitive mutations when `ENABLE_SENSITIVE_MUTATION_RATE_LIMIT=true`.
 
 ---
 

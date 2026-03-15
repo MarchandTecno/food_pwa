@@ -10,8 +10,10 @@ import { createContext } from './context';
 import { validateRuntimeConfig } from './config/env';
 import { buildCorsOptions, buildCspDirectives, graphqlRateLimitMiddleware } from './config/security';
 import { requestIdMiddleware } from './middleware/requestId';
+import { createObservabilityAccessMiddleware } from './middleware/observabilityAccess';
 import { createGraphqlObservabilityPlugin } from './middleware/graphqlObservability';
 import { getMetricsSnapshot } from './utils/metrics';
+import { getSystemHealthSnapshot } from './utils/observability';
 import { applyDatabaseErrorPolicy, prisma } from './database';
 
 async function start() {
@@ -32,6 +34,7 @@ async function start() {
   app.use(cors(buildCorsOptions()));
   app.use(requestIdMiddleware);
   app.use(json());
+  const observabilityAccessMiddleware = createObservabilityAccessMiddleware();
 
   const server = new ApolloServer({ 
     typeDefs, 
@@ -47,28 +50,24 @@ async function start() {
   }));
 
   // Health check endpoint
-  app.get('/health', async (_req, res) => {
-    try {
-      await prisma.$queryRaw`SELECT 1`;
-      res.json({
-        status: 'ok',
-        db: 'up',
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error) {
-      res.status(503).json({
-        status: 'degraded',
-        db: 'down',
-        timestamp: new Date().toISOString(),
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  app.get('/health', observabilityAccessMiddleware, async (_req, res) => {
+    const health = await getSystemHealthSnapshot(prisma);
+    res.status(health.status === 'ok' ? 200 : 503).json({
+      status: health.status,
+      db: health.db,
+      timestamp: health.checkedAt,
+      uptime_seconds: health.uptimeSeconds,
+      db_ping_ms: health.dbPingMs,
+      ...(health.error ? { error: health.error } : {}),
+    });
   });
 
-  app.get('/metrics', (_req, res) => {
+  app.get('/metrics', observabilityAccessMiddleware, async (_req, res) => {
+    const health = await getSystemHealthSnapshot(prisma);
     res.json({
       timestamp: new Date().toISOString(),
-      graphql: getMetricsSnapshot(),
+      health,
+      metrics: getMetricsSnapshot(),
     });
   });
 

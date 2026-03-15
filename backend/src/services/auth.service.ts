@@ -6,6 +6,7 @@ import { normalizeRole } from '../utils/roles';
 import { parseLoginArgsOrThrow, parseRegisterArgsOrThrow } from '../schemas/auth.schema';
 import { executeDbOperation } from '../database';
 import { toAuthPayloadOutput } from '../models/auth.model';
+import { createAuditLog, toAuditJsonRecord } from '../utils/audit';
 
 export interface LoginArgs {
   email: string;
@@ -41,17 +42,45 @@ export async function loginUser(ctx: Context, args: LoginArgs) {
       throw invalidCredentialsError();
     }
 
-    const role = normalizeRole(user.roles?.nombre_rol ?? undefined) ?? 'customer';
+    const loginTimestamp = new Date();
+    const updatedUser = await ctx.prisma.users.update({
+      where: { id: user.id },
+      data: {
+        last_login: loginTimestamp,
+      },
+      include: {
+        roles: {
+          select: {
+            nombre_rol: true,
+          },
+        },
+      },
+    });
+
+    await createAuditLog({
+      db: ctx.prisma,
+      ctx,
+      entity: 'users',
+      action: 'LOGIN_OK',
+      actorUserId: updatedUser.id,
+      tenantId: updatedUser.tenant_id,
+      recordId: updatedUser.id,
+      newValue: toAuditJsonRecord({
+        last_login: loginTimestamp.toISOString(),
+      }),
+    });
+
+    const role = normalizeRole(updatedUser.roles?.nombre_rol ?? undefined) ?? 'customer';
 
     const token = generateToken({
-      userId: user.id,
-      email: user.email,
-      tenantId: user.tenant_id ?? undefined,
-      branchId: user.branch_id ?? undefined,
+      userId: updatedUser.id,
+      email: updatedUser.email,
+      tenantId: updatedUser.tenant_id ?? undefined,
+      branchId: updatedUser.branch_id ?? undefined,
       role,
     });
 
-    return toAuthPayloadOutput(token, user);
+    return toAuthPayloadOutput(token, updatedUser);
   });
 }
 

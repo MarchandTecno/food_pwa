@@ -6,6 +6,12 @@ import {
   parseUpdateProductArgsOrThrow,
 } from '../../src/schemas/products.schema';
 import { parseCreateOrderArgsOrThrow, parseListOrdersArgsOrThrow } from '../../src/schemas/orders.schema';
+import {
+  parseAdminCreateUserArgsOrThrow,
+  parseAdminListSessionLogsArgsOrThrow,
+  parseAdminUpdateUserAssignmentArgsOrThrow,
+} from '../../src/schemas/adminUsers.schema';
+import { parseAdminListAuditLogsArgsOrThrow as parseAdminAuditLogsArgsOrThrow } from '../../src/schemas/adminObservability.schema';
 import { parseOrThrow } from '../../src/schemas/schemaUtils';
 
 function expectBadUserInput(fn: () => unknown, pathFragment: string) {
@@ -131,6 +137,116 @@ describe('schemas validation', () => {
           payload: { amount: 0 },
         }),
       'payload.amount',
+    );
+  });
+
+  it('validates admin user role scope rules for tenant and branch bindings', () => {
+    expectBadUserInput(
+      () =>
+        parseAdminCreateUserArgsOrThrow({
+          input: {
+            nombre: 'Owner User',
+            email: 'owner@tenant.test',
+            password: 'Password123!',
+            role: 'OWNER',
+          },
+        }),
+      'tenant_id',
+    );
+
+    expectBadUserInput(
+      () =>
+        parseAdminCreateUserArgsOrThrow({
+          input: {
+            nombre: 'Kitchen User',
+            email: 'kitchen@tenant.test',
+            password: 'Password123!',
+            role: 'KITCHEN',
+            tenant_id: 'tenant_1',
+          },
+        }),
+      'branch_id',
+    );
+
+    const superAdminUser = parseAdminCreateUserArgsOrThrow({
+      input: {
+        nombre: 'Super Admin',
+        email: 'superadmin@foodflow.local',
+        password: 'Password123!',
+        role: 'SUPERADMIN',
+      },
+    });
+
+    expect(superAdminUser.input.tenant_id).toBeUndefined();
+    expect(superAdminUser.input.branch_id).toBeUndefined();
+  });
+
+  it('requires mutable fields on admin update assignment payload', () => {
+    expectBadUserInput(
+      () =>
+        parseAdminUpdateUserAssignmentArgsOrThrow({
+          input: {
+            user_id: 'user_1',
+          },
+        }),
+      'at least one mutable field must be provided',
+    );
+  });
+
+  it('requires strong password policy for admin user create/reset', () => {
+    expectBadUserInput(
+      () =>
+        parseAdminCreateUserArgsOrThrow({
+          input: {
+            nombre: 'Weak User',
+            email: 'weak@tenant.test',
+            password: 'password123!',
+            role: 'OWNER',
+            tenant_id: 'tenant_1',
+          },
+        }),
+      'password',
+    );
+  });
+
+  it('normalizes search filter in admin session logs args', () => {
+    const parsed = parseAdminListSessionLogsArgsOrThrow({
+      limit: 25,
+      offset: 0,
+      filter: {
+        search: '   login_ok   ',
+      },
+    });
+
+    expect(parsed.filter?.search).toBe('login_ok');
+  });
+
+  it('normalizes admin audit filters and validates chronological date ranges', () => {
+    const parsed = parseAdminAuditLogsArgsOrThrow({
+      limit: 25,
+      offset: 0,
+      filter: {
+        actor_search: '  supervisor@foodflow.test ',
+        entity: ' ORDERS ',
+        action: ' delete_order ',
+        from: '2026-03-15T10:00:00.000Z',
+        to: '2026-03-15T11:00:00.000Z',
+      },
+    });
+
+    expect(parsed.filter?.actor_search).toBe('supervisor@foodflow.test');
+    expect(parsed.filter?.entity).toBe('orders');
+    expect(parsed.filter?.action).toBe('DELETE_ORDER');
+
+    expectBadUserInput(
+      () =>
+        parseAdminAuditLogsArgsOrThrow({
+          filter: {
+            from: '2026-03-15T11:00:00.000Z',
+            to: '2026-03-15T10:00:00.000Z',
+          },
+        }),
+      'filter.from',
     );
   });
 });

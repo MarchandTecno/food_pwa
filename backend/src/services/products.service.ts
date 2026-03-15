@@ -9,8 +9,9 @@ import {
   parseListProductsArgsOrThrow,
   parseUpdateProductArgsOrThrow,
 } from '../schemas/products.schema';
-import { executeDbOperation } from '../database';
+import { executeDbOperation, withTransaction } from '../database';
 import { toProductListOutput, toProductOutput, type ProductOutput } from '../models/product.model';
+import { createAuditLog, toAuditJsonRecord } from '../utils/audit';
 
 export interface ProductFilterInput {
   is_available?: boolean;
@@ -53,6 +54,35 @@ export interface UpdateProductArgs extends CreateProductArgs {
 
 interface ProductScope {
   tenantId?: string;
+}
+
+const AUDIT_ACTION_PRODUCT_CREATE = 'PRODUCT_CREATE';
+const AUDIT_ACTION_PRODUCT_UPDATE = 'PRODUCT_UPDATE';
+const AUDIT_ACTION_PRODUCT_DELETE = 'PRODUCT_DELETE';
+
+function toNullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toProductAuditRecord(product: {
+  category_id?: string | null;
+  nombre?: string | null;
+  descripcion?: string | null;
+  precio_venta?: unknown;
+  imagen_url?: string | null;
+  is_available?: boolean | null;
+}): Prisma.InputJsonValue {
+  return toAuditJsonRecord({
+    category_id: product.category_id ?? null,
+    nombre: product.nombre ?? null,
+    descripcion: product.descripcion ?? null,
+    precio_venta: toNullableNumber(product.precio_venta),
+    imagen_url: product.imagen_url ?? null,
+    is_available: product.is_available ?? null,
+  });
 }
 
 async function getAuthenticatedScope(ctx: Context): Promise<ProductScope> {
@@ -194,92 +224,148 @@ export async function getProductById(ctx: Context, args: IdArgs) {
 export async function createProduct(ctx: Context, args: CreateProductArgs) {
   return executeDbOperation(async () => {
     const validatedArgs = parseCreateProductArgsOrThrow(args);
-    getAuthenticatedUserId(ctx);
+    const userId = getAuthenticatedUserId(ctx);
     const scope = await getAuthenticatedScope(ctx);
 
     const precioVenta = validatedArgs.precio_venta ?? 0;
     const categoryId = await validateCategoryOrThrow(ctx, validatedArgs.category_id, scope);
 
-    const createdProduct = await ctx.prisma.products.create({
-      data: {
-        category_id: categoryId,
-        nombre: validatedArgs.nombre,
-        descripcion: validatedArgs.descripcion,
-        precio_venta: precioVenta,
-        imagen_url: validatedArgs.imagen_url,
-        is_available: true,
-      },
-    });
+    return withTransaction(ctx.prisma, async (tx) => {
+      const createdProduct = await tx.products.create({
+        data: {
+          category_id: categoryId,
+          nombre: validatedArgs.nombre,
+          descripcion: validatedArgs.descripcion,
+          precio_venta: precioVenta,
+          imagen_url: validatedArgs.imagen_url,
+          is_available: true,
+        },
+      });
 
-    return toProductOutput(createdProduct);
+      await createAuditLog({
+        db: tx,
+        ctx,
+        entity: 'products',
+        action: AUDIT_ACTION_PRODUCT_CREATE,
+        actorUserId: userId,
+        tenantId: scope.tenantId,
+        recordId: createdProduct.id,
+        newValue: toProductAuditRecord(createdProduct),
+      });
+
+      return toProductOutput(createdProduct);
+    });
   });
 }
 
 export async function updateProduct(ctx: Context, args: UpdateProductArgs) {
   return executeDbOperation(async () => {
     const validatedArgs = parseUpdateProductArgsOrThrow(args);
-    getAuthenticatedUserId(ctx);
+    const userId = getAuthenticatedUserId(ctx);
     const scope = await getAuthenticatedScope(ctx);
 
-    const existing = await ctx.prisma.products.findFirst({
-      where: {
-        id: validatedArgs.id,
-        ...buildProductScopeWhere(scope),
-      },
-      select: { id: true },
+    return withTransaction(ctx.prisma, async (tx) => {
+      const existing = await tx.products.findFirst({
+        where: {
+          id: validatedArgs.id,
+          ...buildProductScopeWhere(scope),
+        },
+        select: {
+          id: true,
+          category_id: true,
+          nombre: true,
+          descripcion: true,
+          precio_venta: true,
+          imagen_url: true,
+          is_available: true,
+        },
+      });
+
+      if (!existing) {
+        throw badUserInputError('Invalid input: product is not accessible for current tenant scope');
+      }
+
+      const updateData: Prisma.productsUpdateInput = {};
+      if (validatedArgs.nombre !== undefined) {
+        updateData.nombre = validatedArgs.nombre;
+      }
+      if (validatedArgs.descripcion !== undefined) updateData.descripcion = validatedArgs.descripcion;
+      if (validatedArgs.precio_venta !== undefined) {
+        updateData.precio_venta = validatedArgs.precio_venta;
+      }
+      if (validatedArgs.imagen_url !== undefined) updateData.imagen_url = validatedArgs.imagen_url;
+      if (validatedArgs.is_available !== undefined) updateData.is_available = validatedArgs.is_available;
+      if (validatedArgs.category_id !== undefined) {
+        updateData.categories = {
+          connect: { id: await validateCategoryOrThrow(ctx, validatedArgs.category_id, scope) },
+        };
+      }
+
+      const updatedProduct = await tx.products.update({
+        where: { id: validatedArgs.id },
+        data: updateData,
+      });
+
+      await createAuditLog({
+        db: tx,
+        ctx,
+        entity: 'products',
+        action: AUDIT_ACTION_PRODUCT_UPDATE,
+        actorUserId: userId,
+        tenantId: scope.tenantId,
+        recordId: updatedProduct.id,
+        previousValue: toProductAuditRecord(existing),
+        newValue: toProductAuditRecord(updatedProduct),
+      });
+
+      return toProductOutput(updatedProduct);
     });
-
-    if (!existing) {
-      throw badUserInputError('Invalid input: product is not accessible for current tenant scope');
-    }
-
-    const updateData: Prisma.productsUpdateInput = {};
-    if (validatedArgs.nombre !== undefined) {
-      updateData.nombre = validatedArgs.nombre;
-    }
-    if (validatedArgs.descripcion !== undefined) updateData.descripcion = validatedArgs.descripcion;
-    if (validatedArgs.precio_venta !== undefined) {
-      updateData.precio_venta = validatedArgs.precio_venta;
-    }
-    if (validatedArgs.imagen_url !== undefined) updateData.imagen_url = validatedArgs.imagen_url;
-    if (validatedArgs.is_available !== undefined) updateData.is_available = validatedArgs.is_available;
-    if (validatedArgs.category_id !== undefined) {
-      updateData.categories = {
-        connect: { id: await validateCategoryOrThrow(ctx, validatedArgs.category_id, scope) },
-      };
-    }
-
-    const updatedProduct = await ctx.prisma.products.update({
-      where: { id: validatedArgs.id },
-      data: updateData,
-    });
-
-    return toProductOutput(updatedProduct);
   });
 }
 
 export async function deleteProduct(ctx: Context, args: IdArgs) {
   return executeDbOperation(async () => {
     const validatedArgs = parseIdArgsOrThrow(args);
-    getAuthenticatedUserId(ctx);
+    const userId = getAuthenticatedUserId(ctx);
     const scope = await getAuthenticatedScope(ctx);
 
-    const existing = await ctx.prisma.products.findFirst({
-      where: {
-        id: validatedArgs.id,
-        ...buildProductScopeWhere(scope),
-      },
-      select: { id: true },
+    return withTransaction(ctx.prisma, async (tx) => {
+      const existing = await tx.products.findFirst({
+        where: {
+          id: validatedArgs.id,
+          ...buildProductScopeWhere(scope),
+        },
+        select: {
+          id: true,
+          category_id: true,
+          nombre: true,
+          descripcion: true,
+          precio_venta: true,
+          imagen_url: true,
+          is_available: true,
+        },
+      });
+
+      if (!existing) {
+        throw badUserInputError('Invalid input: product is not accessible for current tenant scope');
+      }
+
+      await tx.products.delete({
+        where: { id: validatedArgs.id },
+      });
+
+      await createAuditLog({
+        db: tx,
+        ctx,
+        entity: 'products',
+        action: AUDIT_ACTION_PRODUCT_DELETE,
+        actorUserId: userId,
+        tenantId: scope.tenantId,
+        recordId: existing.id,
+        previousValue: toProductAuditRecord(existing),
+      });
+
+      return true;
     });
-
-    if (!existing) {
-      throw badUserInputError('Invalid input: product is not accessible for current tenant scope');
-    }
-
-    await ctx.prisma.products.delete({
-      where: { id: validatedArgs.id },
-    });
-
-    return true;
   });
 }
